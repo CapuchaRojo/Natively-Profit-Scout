@@ -10,6 +10,7 @@ import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../
 import {
   discoverPublicUrls, fetchPublicUrl,
   scanCompanyPublicSurface, applyReconFindingsToCompany,
+  generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
 import type {
   Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,

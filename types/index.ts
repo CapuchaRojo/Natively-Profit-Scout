@@ -329,10 +329,10 @@ export interface Company {
   publicIntelSignals: PublicIntelSignal[];
   publicIntelOpenings: PublicIntelOpening[];
   publicIntelSummary?: PublicIntelSummary;
+  reconFindings?: ReconFindings;
   createdAt: string;
   updatedAt: string;
   isSample?: boolean;
-}
 
 export interface AppSettings {
   userName: string;

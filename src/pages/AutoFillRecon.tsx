@@ -41,11 +41,28 @@ export default function AutoFillReconPage() {
   const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
   const [scanError, setScanError] = useState('');
   const [fetchProgress, setFetchProgress] = useState('');
+  const [manualPasteText, setManualPasteText] = useState('');
 
   // Update URL when company changes
   useEffect(() => {
     if (company?.basic.website) {
       setHomepageUrl(company.basic.website);
+    }
+  }, [company?.id]);
+  // Restore recon state from company on mount
+  useEffect(() => {
+    if (company?.reconFindings) {
+      const rf = company.reconFindings;
+      if (rf.status === 'scanned' || rf.status === 'analyzed') {
+        setDiscoveredUrls(rf.discoveredUrls || []);
+        setDetectedTools(rf.detectedTools || []);
+        setInferredWorkflows(rf.inferredWorkflows || []);
+        setSuggestions(rf.autoFillSuggestions || []);
+        setOpenings(rf.openings || []);
+        if (rf.status === 'analyzed') { setScanStatus('done'); }
+        if (rf.status === 'analyzed') { setActiveTab('fetch'); }
+        else if (rf.discoveredUrls.length > 0) { setActiveTab('fetch'); }
+      }
     }
   }, [company?.id]);
 
@@ -67,6 +84,13 @@ export default function AutoFillReconPage() {
     setScanStatus('discovering');
     setScanError('');
 
+    // Clear local state for a fresh scan
+    setDiscoveredUrls([]);
+    setDetectedTools([]);
+    setInferredWorkflows([]);
+    setSuggestions([]);
+    setOpenings([]);
+
     try {
       let homepageHtml: string | undefined;
 
@@ -83,6 +107,23 @@ export default function AutoFillReconPage() {
 
       const urls = discoverPublicUrls(homepageUrl, homepageHtml);
       setDiscoveredUrls(urls);
+
+      // Persist discovered URLs immediately so state survives navigation
+      updateCompany(company.id, {
+        reconFindings: {
+          companyId: company.id,
+          discoveredUrls: urls,
+          detectedTools: [],
+          inferredWorkflows: [],
+          autoFillSuggestions: [],
+          openings: [],
+          publicPeopleNotes: '',
+          publicLeadershipText: '',
+          scanDate: new Date().toISOString(),
+          status: 'scanned',
+        }
+      });
+
       setScanStatus('idle');
       setActiveTab('fetch');
     } catch (err) {
@@ -130,6 +171,7 @@ export default function AutoFillReconPage() {
     const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
 
+    // ─── Phase 1: Fetch unscanned URLs ────────────────────────
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
@@ -167,11 +209,26 @@ export default function AutoFillReconPage() {
       }
     }
 
+    // ─── Phase 2: Include pasted URLs directly ────────────────
+    const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
+    for (const urlInfo of pastedUrls) {
+      if (urlInfo.fetchedText) {
+        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
+
+        // Tool fingerprinting on pasted text
+        if (settings.enableToolFingerprinting) {
+          const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
+          const inferred = inferToolsFromText(urlInfo.fetchedText, urlInfo.url);
+          localDetected.push(...inferred);
+        }
+      }
+    }
+
     setDiscoveredUrls(updatedUrls);
     setFetchProgress('Analyzing...');
     setScanStatus('analyzing');
 
-    // Deduplicate local tools
+    // Deduplicate local tools (fetched + pasted)
     const toolMap = new Map<string, DetectedTool>();
     for (const t of localDetected) {
       const existing = toolMap.get(t.toolName);
@@ -199,7 +256,6 @@ export default function AutoFillReconPage() {
     }
 
     // Generate suggestions and openings from LOCAL arrays (not stale state)
-    // This ensures workflow-derived data is included on the first scan
     const localSuggestions = generateAutoFillSuggestions(
       company, localTools, localWorkflows,
       allPageTexts.map(p => ({ text: p.text, url: p.url }))
@@ -215,8 +271,25 @@ export default function AutoFillReconPage() {
     setSuggestions(localSuggestions);
     setOpenings(localOpenings);
 
+    // Save scan results into company so state survives navigation
+    updateCompany(company.id, {
+      reconFindings: {
+        companyId: company.id,
+        discoveredUrls: updatedUrls,
+        detectedTools: localTools,
+        inferredWorkflows: localWorkflows,
+        autoFillSuggestions: localSuggestions,
+        openings: localOpenings,
+        publicPeopleNotes: publicPeopleNotes,
+        publicLeadershipText: publicLeadershipText,
+        scanDate: new Date().toISOString(),
+        status: 'analyzed',
+      }
+    });
+
+    // Progress summary (totalSources calculation removed as unused)
     setScanStatus('done');
-    setFetchProgress(`Completed: ${urlsToScan.length} URLs scanned`);
+    setFetchProgress(`Completed: ${urlsToScan.length} URLs fetched + ${pastedUrls.length} pasted sources analyzed`);
   };
 
   // ─── Step 3: Apply Findings ─────────────────────────────────
@@ -500,70 +573,120 @@ export default function AutoFillReconPage() {
               </div>
             ) : (
               <>
-                <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
-                  {discoveredUrls.filter(u => u.status === 'unscanned').length} URLs ready to scan.
-                  URLs blocked by CORS can be pasted manually.
-                </p>
+                {discoveredUrls.length === 0 ? (
+                  /* ─── Fallback: Manual Homepage Paste ────── */
+                  <div style={{
+                    padding: 16, background: '#0f1525', borderRadius: 6,
+                    border: '1px solid #2a3a5c', marginBottom: 16,
+                  }}>
+                    <div style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
+                      📝 Manual Homepage Paste
+                    </div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                      No URLs were discovered or state was lost. Paste your company homepage text below to analyze.
+                    </div>
+                    <div style={{ fontSize: 11, color: '#3b82f6', marginBottom: 8 }}>
+                      URL: {homepageUrl}
+                    </div>
+                    <textarea
+                      className="input"
+                      rows={4}
+                      placeholder="Paste public homepage text or HTML here..."
+                      style={{ fontSize: 12, marginBottom: 8 }}
+                      value={manualPasteText}
+                      onChange={e => setManualPasteText(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const text = manualPasteText.trim();
+                        if (!text) return;
+                        const newEntry: ReconDiscoveredUrl = {
+                          urlId: `url-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                          url: homepageUrl,
+                          pageType: 'Homepage',
+                          discoveryMethod: 'user-added',
+                          status: 'pasted',
+                          confidence: 'High' as ConfidenceLevel,
+                          notes: 'Manually pasted homepage text',
+                          fetchedText: text,
+                          fetchSourceType: 'pasted-public-page',
+                        };
+                        setDiscoveredUrls([newEntry]);
+                        setManualPasteText('');
+                      }}
+                    >
+                      Analyze Pasted Homepage
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
+                      {discoveredUrls.filter(u => u.status === 'unscanned').length} URLs ready to scan.
+                      URLs blocked by CORS can be pasted manually.
+                    </p>
 
-                <div style={{ maxHeight: 400, overflow: 'auto', marginBottom: 16 }}>
-                  {discoveredUrls.map(urlInfo => (
-                    <div key={urlInfo.urlId} style={{
-                      padding: '8px 12px', borderBottom: '1px solid rgba(42, 58, 92, 0.3)',
-                      fontSize: 12,
-                    }}>
-                      <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-                        <div className="flex items-center" style={{ gap: 8 }}>
-                          <span style={{
-                            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                            background: urlInfo.status === 'scanned' ? '#10b981'
-                              : urlInfo.status === 'blocked' ? '#f59e0b'
-                              : urlInfo.status === 'failed' ? '#ef4444'
-                              : urlInfo.status === 'pasted' ? '#8b5cf6'
-                              : '#3b82f6',
-                          }} />
-                          <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{urlInfo.pageType}</span>
-                          <span className="truncate" style={{ color: '#64748b', maxWidth: 300 }}>{urlInfo.url}</span>
-                        </div>
-                        <span className={`badge ${
-                          urlInfo.status === 'scanned' ? 'badge-green' :
-                          urlInfo.status === 'blocked' ? 'badge-amber' :
-                          urlInfo.status === 'failed' ? 'badge-red' :
-                          urlInfo.status === 'pasted' ? 'badge-purple' :
-                          'badge-blue'
-                        }`} style={{ fontSize: 10 }}>
-                          {urlInfo.status}
-                        </span>
-                      </div>
-                      {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned') && (
-                        <div style={{ marginTop: 4 }}>
-                          {urlInfo.status === 'blocked' && (
-                            <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 4 }}>
-                              ⚠️ {urlInfo.notes || 'Blocked by CORS'}
+                    <div style={{ maxHeight: 400, overflow: 'auto', marginBottom: 16 }}>
+                      {discoveredUrls.map(urlInfo => (
+                        <div key={urlInfo.urlId} style={{
+                          padding: '8px 12px', borderBottom: '1px solid rgba(42, 58, 92, 0.3)',
+                          fontSize: 12,
+                        }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                            <div className="flex items-center" style={{ gap: 8 }}>
+                              <span style={{
+                                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                                background: urlInfo.status === 'scanned' ? '#10b981'
+                                  : urlInfo.status === 'blocked' ? '#f59e0b'
+                                  : urlInfo.status === 'failed' ? '#ef4444'
+                                  : urlInfo.status === 'pasted' ? '#8b5cf6'
+                                  : '#3b82f6',
+                              }} />
+                              <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{urlInfo.pageType}</span>
+                              <span className="truncate" style={{ color: '#64748b', maxWidth: 300 }}>{urlInfo.url}</span>
+                            </div>
+                            <span className={`badge ${
+                              urlInfo.status === 'scanned' ? 'badge-green' :
+                              urlInfo.status === 'blocked' ? 'badge-amber' :
+                              urlInfo.status === 'failed' ? 'badge-red' :
+                              urlInfo.status === 'pasted' ? 'badge-purple' :
+                              'badge-blue'
+                            }`} style={{ fontSize: 10 }}>
+                              {urlInfo.status}
+                            </span>
+                          </div>
+                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned') && (
+                            <div style={{ marginTop: 4 }}>
+                              {urlInfo.status === 'blocked' && (
+                                <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 4 }}>
+                                  ⚠️ {urlInfo.notes || 'Blocked by CORS'}
+                                </div>
+                              )}
+                              <textarea
+                                className="input"
+                                placeholder="Paste page text or HTML here if fetch failed..."
+                                rows={2}
+                                style={{ fontSize: 11, minHeight: 40 }}
+                                onBlur={e => {
+                                  if (e.target.value.trim()) {
+                                    handlePasteUrlContent(urlInfo.urlId, e.target.value);
+                                  }
+                                }}
+                              />
                             </div>
                           )}
-                          <textarea
-                            className="input"
-                            placeholder="Paste page text or HTML here if fetch failed..."
-                            rows={2}
-                            style={{ fontSize: 11, minHeight: 40 }}
-                            onBlur={e => {
-                              if (e.target.value.trim()) {
-                                handlePasteUrlContent(urlInfo.urlId, e.target.value);
-                              }
-                            }}
-                          />
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
 
                 <div className="flex justify-between">
                   <button className="btn btn-secondary" onClick={() => setActiveTab('discover')}>
                     ← Back to Discover
                   </button>
                   <button className="btn btn-primary" onClick={handleFetchAndAnalyze}>
-                    {scanStatus === 'done' ? 'Re-scan' : 'Fetch & Analyze'}
+                    {scanStatus === 'done' ? 'Re-scan' : 'Analyze Public Sources'}
                   </button>
                 </div>
               </>

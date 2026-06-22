@@ -23,7 +23,7 @@ type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openi
 export default function AutoFillReconPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { state, getCompany, updateCompany, regenerateAnalysis } = useApp();
+  const { state, getCompany, updateCompany } = useApp();
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
 
@@ -271,8 +271,6 @@ export default function AutoFillReconPage() {
     };
     const updates = applyReconFindingsToCompany(company, findings);
     updateCompany(company.id, updates);
-    // Regenerate full analysis
-    regenerateAnalysis(company.id);
     setScanStatus('idle');
   };
 
@@ -294,9 +292,7 @@ export default function AutoFillReconPage() {
     updateCompany(company.id, {
       painPoints: [...company.painPoints, ...newPains],
     });
-    regenerateAnalysis(company.id);
   };
-
   const handleGenerateOpportunities = () => {
     const newOpps = openings.map(o => ({
       id: `opp-recon-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -319,7 +315,6 @@ export default function AutoFillReconPage() {
     updateCompany(company.id, {
       opportunities: [...company.opportunities, ...newOpps],
     });
-    regenerateAnalysis(company.id);
   };
 
   // ─── Render ──────────────────────────────────────────────────
@@ -898,7 +893,7 @@ export default function AutoFillReconPage() {
                   onClick={handleApplyAllToProfile}
                   disabled={scanStatus !== 'done' && suggestions.length === 0}
                 >
-                  ✅ Apply All & Regenerate
+                  ✅ Apply All to Company Profile
                 </button>
                 <button
                   className="btn btn-secondary"
@@ -918,13 +913,13 @@ export default function AutoFillReconPage() {
 
               {suggestions.length > 0 && (
                 <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                  <p><strong>What "Apply All & Regenerate" does:</strong></p>
+                  <p><strong>What "Apply All" does:</strong></p>
                   <ul style={{ margin: '4px 0', paddingLeft: 20, lineHeight: 1.8 }}>
                     <li>Fills empty company fields from suggestions (Industry, Description, Location, Tools)</li>
                     <li>Adds detected tools to Tool & Workflow Map</li>
                     <li>Adds inferred workflows as pain points</li>
                     <li>Adds discovered openings as opportunities</li>
-                    <li>Regenerates full analysis (profile, stakeholders, sales plan, CRM export)</li>
+                    <li>Saves all recon findings to the company record</li>
                   </ul>
                   <p style={{ marginTop: 8, color: '#f59e0b' }}>
                     ⚠️ Only fills empty fields — existing data is preserved.

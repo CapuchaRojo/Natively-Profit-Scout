@@ -17,7 +17,7 @@ const departmentLabels: Record<PainDepartment, string> = {
 export default function PainPointMapPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getCompany, regenerateAnalysis } = useApp();
+  const { getCompany, updateCompany } = useApp();
   const company = getCompany(id || '');
   const [expandedPain, setExpandedPain] = useState<string | null>(null);
 
@@ -46,26 +46,43 @@ export default function PainPointMapPage() {
   const detectedTools = recon?.detectedTools || [];
   const inferredWorkflows = recon?.inferredWorkflows || [];
   const hasReconData = detectedTools.length > 0 || inferredWorkflows.length > 0;
+
   const handleGenerateFromRecon = () => {
     if (!company || inferredWorkflows.length === 0) return;
-    const newPains = inferredWorkflows.map((wf: any) => ({
-      id: `pain-recon-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: wf.workflowName || wf.name,
-      department: (wf.department || 'operations').toLowerCase() as PainDepartment,
-      symptoms: (wf.possibleBottleneck || wf.evidence || 'Recon-based pain point').slice(0, 200),
-      likelyCost: 'Recon estimate — validate with customer',
-      timeLost: 'To be quantified during discovery',
-      revenueImpact: 'To be quantified during discovery',
-      automationOpportunity: wf.automationOpportunity || 'Automation opportunity',
-      suggestedSolution: wf.suggestedNativeBuilderDemo || 'Natively automation solution',
-      confidence: wf.confidence || 'Medium',
-      discoveryQuestion: wf.discoveryQuestion || 'How does this process work today?',
-      severity: 3, frequency: 3, revenueImpactScore: 3, easeOfSolution: 3, decisionMakerVisibility: 3,
-    }));
-    const updatedCompany = { ...company, painPoints: [...company.painPoints, ...newPains] };
-    // Use context method
-    const { getCompany: _, ...rest } = { getCompany: () => {} };
-    regenerateAnalysis(company.id);
+
+    // Build a dedup set from existing pain points (by name + symptoms)
+    const existingKeys = new Set(
+      company.painPoints.map(p => `${p.name}|${p.symptoms}`)
+    );
+
+    const newPains: PainPoint[] = inferredWorkflows
+      .filter(wf => {
+        const name = wf.workflowName || wf.name;
+        const evidence = (wf.possibleBottleneck || wf.evidence || '').slice(0, 200);
+        return !existingKeys.has(`${name}|${evidence}`);
+      })
+      .map(wf => ({
+        id: `pain-recon-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: wf.workflowName || wf.name,
+        department: (wf.department || 'operations').toLowerCase() as PainDepartment,
+        symptoms: (wf.possibleBottleneck || wf.evidence || 'Recon-based pain point — validate with customer').slice(0, 200),
+        likelyCost: 'Recon estimate — validate with customer',
+        timeLost: 'To be quantified during discovery',
+        revenueImpact: 'To be quantified during discovery',
+        automationOpportunity: wf.automationOpportunity || 'Automation opportunity identified from public recon',
+        suggestedSolution: wf.suggestedNativeBuilderDemo || 'Natively automation solution (recon-based)',
+        confidence: wf.confidence || 'Medium',
+        discoveryQuestion: wf.discoveryQuestion || 'How does this process work today?',
+        severity: 3, frequency: 3, revenueImpactScore: 3, easeOfSolution: 3, decisionMakerVisibility: 3,
+      }));
+
+    if (newPains.length === 0) return;
+
+    // Merge recon-generated pain points into company record — no regenerateAnalysis
+    // since it would overwrite these new items with template-based ones
+    updateCompany(company.id, {
+      painPoints: [...company.painPoints, ...newPains],
+    });
   };
 
   return (

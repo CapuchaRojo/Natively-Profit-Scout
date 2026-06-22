@@ -2,14 +2,14 @@
 // Auto-Fill Recon Page — v0.3
 // Public web intelligence collector + auto-fill
 // ============================================================
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
 import {
   discoverPublicUrls, fetchPublicUrl,
-  scanCompanyPublicSurface, applyReconFindingsToCompany,
+  applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
 import type {
@@ -126,8 +126,7 @@ export default function AutoFillReconPage() {
     const settings = state.settings.reconSettings;
     const urlsToScan = discoveredUrls.filter(u => u.status === 'unscanned').slice(0, settings.maxPagesPerScan);
 
-    const allDetected: DetectedTool[] = [];
-    const allWorkflows: InferredWorkflow[] = [];
+    const localDetected: DetectedTool[] = [];
     const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
 
@@ -148,9 +147,9 @@ export default function AutoFillReconPage() {
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           const fp = fingerprintPage(result.html, urlInfo.url);
-          allDetected.push(...fp.detected);
+          localDetected.push(...fp.detected);
           const inferred = inferToolsFromText(result.text || '', urlInfo.url);
-          allDetected.push(...inferred);
+          localDetected.push(...inferred);
         }
       } else if (result.blocked) {
         updatedUrls = updatedUrls.map(u =>
@@ -172,12 +171,23 @@ export default function AutoFillReconPage() {
     setFetchProgress('Analyzing...');
     setScanStatus('analyzing');
 
-    // Workflow inference
+    // Deduplicate local tools
+    const toolMap = new Map<string, DetectedTool>();
+    for (const t of localDetected) {
+      const existing = toolMap.get(t.toolName);
+      if (!existing || (t.detectionMethod === 'Detected' && existing.detectionMethod === 'Inferred')) {
+        toolMap.set(t.toolName, t);
+      }
+    }
+    const localTools = Array.from(toolMap.values());
+
+    // Workflow inference — populate local array immediately
+    let localWorkflows: InferredWorkflow[] = [];
     if (settings.enableWorkflowInference && allPageTexts.length > 0) {
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
-        const wf = inferWorkflowsFromText(page.text, page.url, allDetected);
+        const wf = inferWorkflowsFromText(page.text, page.url, localTools);
         for (const w of wf) {
           const existing = wfMap.get(w.workflowName);
           if (!existing || w.confidence === 'High') {
@@ -185,26 +195,25 @@ export default function AutoFillReconPage() {
           }
         }
       }
-      setInferredWorkflows(Array.from(wfMap.values()));
+      localWorkflows = Array.from(wfMap.values());
     }
 
-    // Deduplicate tools
-    const toolMap = new Map<string, DetectedTool>();
-    for (const t of allDetected) {
-      const existing = toolMap.get(t.toolName);
-      if (!existing || (t.detectionMethod === 'Detected' && existing.detectionMethod === 'Inferred')) {
-        toolMap.set(t.toolName, t);
-      }
-    }
-    setDetectedTools(Array.from(toolMap.values()));
+    // Generate suggestions and openings from LOCAL arrays (not stale state)
+    // This ensures workflow-derived data is included on the first scan
+    const localSuggestions = generateAutoFillSuggestions(
+      company, localTools, localWorkflows,
+      allPageTexts.map(p => ({ text: p.text, url: p.url }))
+    );
+    const localOpenings = generateReconOpenings(
+      localTools, localWorkflows, company,
+      allPageTexts.map(p => ({ text: p.text, url: p.url }))
+    );
 
-    // Generate suggestions
-    const suggestions_ = generateAutoFillSuggestions(company, allDetected, allWorkflows, allPageTexts.map(p => ({ text: p.text!, url: p.url })));
-    setSuggestions(suggestions_);
-
-    // Generate openings
-    const openings_ = generateReconOpenings(allDetected, allWorkflows, company, allPageTexts.map(p => ({ text: p.text!, url: p.url })));
-    setOpenings(openings_);
+    // Update React state from the same local arrays
+    setDetectedTools(localTools);
+    setInferredWorkflows(localWorkflows);
+    setSuggestions(localSuggestions);
+    setOpenings(localOpenings);
 
     setScanStatus('done');
     setFetchProgress(`Completed: ${urlsToScan.length} URLs scanned`);

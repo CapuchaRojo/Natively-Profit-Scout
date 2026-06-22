@@ -3,11 +3,11 @@ import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { CopyButton } from '../components/CopyButton';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
-
+import type { Opportunity } from '../types';
 export default function OpportunityEnginePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getCompany, regenerateAnalysis } = useApp();
+  const { getCompany, updateCompany } = useApp();
   const company = getCompany(id || '');
 
   if (!company) {
@@ -23,30 +23,47 @@ export default function OpportunityEnginePage() {
   const inferredWorkflows = recon?.inferredWorkflows || [];
   const openings = recon?.openings || [];
   const hasReconData = openings.length > 0 || inferredWorkflows.length > 0;
+
   const handleGenerateFromRecon = () => {
-    if (!company) return;
-    const newOpps = inferredWorkflows.map((wf: any, i: number) => ({
-      id: `opp-recon-${Date.now()}-${i}`,
-      title: wf.workflowName || `Workflow: ${wf.name}`,
-      businessProblem: wf.possibleBottleneck || 'Recon-based opportunity',
-      whoFeelsPain: `${wf.department || 'Relevant'} department`,
-      whoPaysForFix: 'Company leadership',
-      proposedSolution: wf.suggestedNativeBuilderDemo || 'Natively automation solution',
-      nativelyBuildIdea: wf.automationOpportunity || 'Automation opportunity',
-      requiredFeatures: 'To be determined during discovery',
-      estimatedComplexity: 'Medium' as const,
-      estimatedBusinessValue: 'Medium' as const,
-      suggestedDemoAngle: `Recon-based: ${wf.workflowName || wf.name}`,
-      suggestedBuildPrompt: wf.automationOpportunity || 'Build an automation solution',
-      discoveryQuestions: wf.discoveryQuestion || 'How does this process work today?',
-      proofNeeded: 'Recon-based discovery — validate with customer',
-      closeStrategy: 'Recon-driven — start with discovery question',
-      opportunityType: 'custom' as const,
-    }));
-    // Apply directly to the company
-    if (company) {
-      regenerateAnalysis(company.id);
-    }
+    if (!company || inferredWorkflows.length === 0) return;
+
+    // Build a dedup set from existing opportunities (by title + businessProblem)
+    const existingKeys = new Set(
+      company.opportunities.map(o => `${o.title}|${o.businessProblem}`)
+    );
+
+    const newOpps: Opportunity[] = inferredWorkflows
+      .filter(wf => {
+        const title = wf.workflowName || `Workflow: ${wf.name}`;
+        const problem = wf.possibleBottleneck || 'Recon-based opportunity';
+        return !existingKeys.has(`${title}|${problem}`);
+      })
+      .map((wf, i) => ({
+        id: `opp-recon-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+        title: wf.workflowName || `Workflow: ${wf.name}`,
+        businessProblem: wf.possibleBottleneck || 'Recon-based opportunity — validate with customer',
+        whoFeelsPain: `${wf.department || 'Relevant'} department`,
+        whoPaysForFix: 'Company leadership',
+        proposedSolution: wf.suggestedNativeBuilderDemo || 'Natively automation solution (recon-sourced)',
+        nativelyBuildIdea: wf.automationOpportunity || 'Automation opportunity identified from public recon',
+        requiredFeatures: 'To be determined during discovery',
+        estimatedComplexity: 'Medium' as const,
+        estimatedBusinessValue: 'Medium' as const,
+        suggestedDemoAngle: `Recon-based: ${wf.workflowName || wf.name} — start with discovery question`,
+        suggestedBuildPrompt: wf.automationOpportunity || 'Build an automation solution based on public recon',
+        discoveryQuestions: wf.discoveryQuestion || 'How does this process work today?',
+        proofNeeded: 'Recon-based discovery — validate with customer conversation',
+        closeStrategy: 'Recon-driven — start with discovery question, qualify interest',
+        opportunityType: 'custom' as const,
+      }));
+
+    if (newOpps.length === 0) return;
+
+    // Merge recon-generated opportunities into company record — no regenerateAnalysis
+    // since it would overwrite these new items with template-based ones
+    updateCompany(company.id, {
+      opportunities: [...company.opportunities, ...newOpps],
+    });
   };
 
   return (

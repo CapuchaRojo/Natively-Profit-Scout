@@ -41,12 +41,11 @@ export default function PainPointMapPage() {
     const scoreB = b.severity + b.frequency + b.revenueImpactScore;
     return scoreB - scoreA;
   });
-
   // Check for recon data
-  const detectedTools = (company as any).detectedTools || [];
-  const inferredWorkflows = (company as any).inferredWorkflows || [];
+  const recon = company.reconFindings;
+  const detectedTools = recon?.detectedTools || [];
+  const inferredWorkflows = recon?.inferredWorkflows || [];
   const hasReconData = detectedTools.length > 0 || inferredWorkflows.length > 0;
-
   const handleGenerateFromRecon = () => {
     if (!company || inferredWorkflows.length === 0) return;
     const newPains = inferredWorkflows.map((wf: any) => ({

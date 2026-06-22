@@ -18,12 +18,11 @@ export default function OpportunityEnginePage() {
       </div>
     );
   }
-
-  const detectedTools = (company as any).detectedTools || [];
-  const inferredWorkflows = (company as any).inferredWorkflows || [];
-  const openings = (company as any).reconOpenings || [];
+  const recon = company.reconFindings;
+  const detectedTools = recon?.detectedTools || [];
+  const inferredWorkflows = recon?.inferredWorkflows || [];
+  const openings = recon?.openings || [];
   const hasReconData = openings.length > 0 || inferredWorkflows.length > 0;
-
   const handleGenerateFromRecon = () => {
     if (!company) return;
     const newOpps = inferredWorkflows.map((wf: any, i: number) => ({

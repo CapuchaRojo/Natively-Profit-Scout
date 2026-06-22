@@ -24,11 +24,11 @@ export default function ProfitBuilderPlanPage() {
   }
 
   const plan = company.salesPlan;
-  const openings = (company as any).reconOpenings || [];
-  const detectedTools = (company as any).detectedTools || [];
-  const inferredWorkflows = (company as any).inferredWorkflows || [];
+  const recon = company.reconFindings;
+  const openings = recon?.openings || [];
+  const detectedTools = recon?.detectedTools || [];
+  const inferredWorkflows = recon?.inferredWorkflows || [];
   const hasReconData = openings.length > 0 || detectedTools.length > 0;
-
   if (!plan) {
     return (
       <div>

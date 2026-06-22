@@ -333,6 +333,7 @@ export interface Company {
   createdAt: string;
   updatedAt: string;
   isSample?: boolean;
+}
 
 export interface AppSettings {
   userName: string;

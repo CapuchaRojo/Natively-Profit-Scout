@@ -147,6 +147,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       workloadFriction: data.workloadFriction, salesContext: data.salesContext,
       painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
       publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
+      reconFindings: undefined,
       createdAt: now, updatedAt: now,
     };
     const analyzed = generateFullAnalysis(newCompany);

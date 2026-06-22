@@ -833,6 +833,7 @@ export function applyReconFindingsToCompany(
     ...updates,
     painPoints: [...company.painPoints, ...newPainPoints],
     opportunities: [...company.opportunities, ...newOpportunities],
+    reconFindings: findings,
   };
 }
 

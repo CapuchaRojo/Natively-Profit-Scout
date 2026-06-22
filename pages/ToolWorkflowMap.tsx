@@ -20,10 +20,9 @@ export default function ToolWorkflowMapPage() {
       </div>
     );
   }
-
-  const publicTools = (company as any).detectedTools || [];
-  const workflows = (company as any).inferredWorkflows || [];
-
+  const recon = company.reconFindings;
+  const publicTools = recon?.detectedTools || [];
+  const workflows = recon?.inferredWorkflows || [];
   return (
     <div>
       <PageHeader
@@ -79,7 +78,7 @@ export default function ToolWorkflowMapPage() {
 
       {view === 'repurpose' && (
         <div>
-          <p className="section-subtitle">For each tool: can it be replicated, automated, simplified, or enhanced with a Natives build?</p>
+          <p className="section-subtitle">For each tool: can it be replicated, automated, simplified, or enhanced with a Natively build?</p>
           {company.highladerRepurpose.length > 0 ? (
             <div className="card">
               <div className="card-body" style={{ overflowX: 'auto' }}>
@@ -157,7 +156,6 @@ export default function ToolWorkflowMapPage() {
           )}
         </div>
       )}
-
       {view === 'workflows' && (
         <div>
           <p className="section-subtitle">Workflows inferred from public website content. Run Auto-Fill Recon to populate.</p>

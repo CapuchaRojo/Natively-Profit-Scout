@@ -29,12 +29,11 @@ export default function CRMExportPage() {
   };
 
   const crm = company.crmExport;
-
   // Recon data for export
-  const detectedTools = (company as any).detectedTools || [];
-  const inferredWorkflows = (company as any).inferredWorkflows || [];
-  const openings = (company as any).reconOpenings || [];
-
+  const recon = company.reconFindings;
+  const detectedTools = recon?.detectedTools || [];
+  const inferredWorkflows = recon?.inferredWorkflows || [];
+  const openings = recon?.openings || [];
   // Generate recon-enhanced brief
   const generateReconBrief = () => {
     const lines: string[] = [];

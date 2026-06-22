@@ -1,11 +1,11 @@
-# Natively-Profit-Scout# Natively Profit Scout
+﻿# Natively Profit Scout
 
 **Natively Profit Scout** is a prospect-intelligence and sales-prep cockpit built with **Native.Builder** for ethical public business research, workflow discovery, stakeholder mapping, pain-point analysis, opportunity scoring, and CRM-ready outreach planning.
 
 The app is designed to help analyze a target business before outreach, identify where that business may have operational friction, and prepare a more relevant consultative sales path using the **Natively Profit Builder** model:
 
 ```text
-RIDE → SELECT → PRICE
+RIDE â†’ SELECT â†’ PRICE
 ```
 
 This project is being built as a reusable sales enablement tool and Native.Builder showcase.
@@ -34,7 +34,7 @@ The goal is to create a safe, repeatable prospect-intelligence workflow that hel
 
 ## The Natively Profit Builder Model
 
-Natively Profit Scout is built around the **RIDE → SELECT → PRICE** flow.
+Natively Profit Scout is built around the **RIDE â†’ SELECT â†’ PRICE** flow.
 
 ### RIDE
 
@@ -158,7 +158,7 @@ Ease of Solution
 Decision-Maker Visibility
 ```
 
-Each dimension uses a simple 1–5 scale:
+Each dimension uses a simple 1â€“5 scale:
 
 ```text
 1 = Low
@@ -497,7 +497,7 @@ The app may analyze pasted LinkedIn notes for:
 The app should clearly label these as:
 
 ```text
-Manual public LinkedIn notes — no automated LinkedIn scraping.
+Manual public LinkedIn notes â€” no automated LinkedIn scraping.
 ```
 
 ---
@@ -682,3 +682,4 @@ It is designed to support ethical consultative selling, not manipulation, survei
 No open-source license has been selected yet.
 
 Until a license is added, all rights are reserved by the repository owner.
+

@@ -12,10 +12,13 @@ import {
   applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
+import { analyzePeopleText } from '../services/peopleSignalEngine';
 import type {
   Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
-  ConfidenceLevel, SourceLabel
+  ConfidenceLevel, PeopleSignalSourceType,
+  RoleMapEntry, StakeholderHypothesis, HiringSignal,
+  MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
@@ -39,16 +42,25 @@ export default function AutoFillReconPage() {
   const [publicLeadershipText, setPublicLeadershipText] = useState('');
   const [extraUrls, setExtraUrls] = useState('');
   const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
+  // People Signal Engine state
+  const [peopleSourceType, setPeopleSourceType] = useState<PeopleSignalSourceType>('linkedin_company_about');
+  const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
+  const [peopleRoleMap, setPeopleRoleMap] = useState<RoleMapEntry[]>([]);
+  const [peopleStakeholderHyps, setPeopleStakeholderHyps] = useState<StakeholderHypothesis[]>([]);
+  const [peopleHiringSignals, setPeopleHiringSignals] = useState<HiringSignal[]>([]);
+  const [peopleMilestoneSignals, setPeopleMilestoneSignals] = useState<MilestoneSignal[]>([]);
+  const [peopleOutreachAngles, setPeopleOutreachAngles] = useState<OutreachAngle[]>([]);
+  const [peopleDiscoveryQuestions, setPeopleDiscoveryQuestions] = useState<PeopleDiscoveryQuestion[]>([]);
+  const [peopleAnalyzing, setPeopleAnalyzing] = useState(false);
   const [scanError, setScanError] = useState('');
   const [fetchProgress, setFetchProgress] = useState('');
   const [manualPasteText, setManualPasteText] = useState('');
-
-  // Update URL when company changes
   useEffect(() => {
     if (company?.basic.website) {
       setHomepageUrl(company.basic.website);
     }
   }, [company?.id]);
+
   // Restore recon state from company on mount
   useEffect(() => {
     if (company?.reconFindings) {
@@ -59,6 +71,16 @@ export default function AutoFillReconPage() {
         setInferredWorkflows(rf.inferredWorkflows || []);
         setSuggestions(rf.autoFillSuggestions || []);
         setOpenings(rf.openings || []);
+        // Restore people signals
+        const ps = rf.peopleSignals;
+        if (ps) {
+          setPeopleRoleMap(ps.roleMap || []);
+          setPeopleStakeholderHyps(ps.stakeholderHypotheses || []);
+          setPeopleHiringSignals(ps.hiringSignals || []);
+          setPeopleMilestoneSignals(ps.milestoneSignals || []);
+          setPeopleOutreachAngles(ps.outreachAngles || []);
+          setPeopleDiscoveryQuestions(ps.discoveryQuestions || []);
+        }
         if (rf.status === 'analyzed') { setScanStatus('done'); }
         if (rf.status === 'analyzed') { setActiveTab('fetch'); }
         else if (rf.discoveredUrls.length > 0) { setActiveTab('fetch'); }
@@ -171,11 +193,9 @@ export default function AutoFillReconPage() {
     const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
 
-    // ─── Phase 1: Fetch unscanned URLs ────────────────────────
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
-
       const result = await fetchPublicUrl(urlInfo.url);
       if (result.success && result.html) {
         updatedUrls = updatedUrls.map(u =>
@@ -184,14 +204,10 @@ export default function AutoFillReconPage() {
             : u
         );
         allPageTexts.push({ text: result.text || '', url: urlInfo.url, html: result.html });
-
-        // Tool fingerprinting
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
-          const fp = fingerprintPage(result.html, urlInfo.url);
-          localDetected.push(...fp.detected);
-          const inferred = inferToolsFromText(result.text || '', urlInfo.url);
-          localDetected.push(...inferred);
+          localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
+          localDetected.push(...inferToolsFromText(result.text || '', urlInfo.url));
         }
       } else if (result.blocked) {
         updatedUrls = updatedUrls.map(u =>
@@ -202,24 +218,18 @@ export default function AutoFillReconPage() {
           u.urlId === urlInfo.urlId ? { ...u, status: 'failed', notes: result.error || 'Failed' } : u
         );
       }
-
-      // Rate limiting delay
       if (i < urlsToScan.length - 1) {
         await new Promise(r => setTimeout(r, settings.scanDelayMs));
       }
     }
 
-    // ─── Phase 2: Include pasted URLs directly ────────────────
     const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
     for (const urlInfo of pastedUrls) {
       if (urlInfo.fetchedText) {
         allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
-
-        // Tool fingerprinting on pasted text
         if (settings.enableToolFingerprinting) {
           const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
-          const inferred = inferToolsFromText(urlInfo.fetchedText, urlInfo.url);
-          localDetected.push(...inferred);
+          localDetected.push(...inferToolsFromText(urlInfo.fetchedText, urlInfo.url));
         }
       }
     }
@@ -228,7 +238,6 @@ export default function AutoFillReconPage() {
     setFetchProgress('Analyzing...');
     setScanStatus('analyzing');
 
-    // Deduplicate local tools (fetched + pasted)
     const toolMap = new Map<string, DetectedTool>();
     for (const t of localDetected) {
       const existing = toolMap.get(t.toolName);
@@ -238,40 +247,27 @@ export default function AutoFillReconPage() {
     }
     const localTools = Array.from(toolMap.values());
 
-    // Workflow inference — populate local array immediately
     let localWorkflows: InferredWorkflow[] = [];
     if (settings.enableWorkflowInference && allPageTexts.length > 0) {
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
-        const wf = inferWorkflowsFromText(page.text, page.url, localTools);
-        for (const w of wf) {
+        for (const w of inferWorkflowsFromText(page.text, page.url, localTools)) {
           const existing = wfMap.get(w.workflowName);
-          if (!existing || w.confidence === 'High') {
-            wfMap.set(w.workflowName, w);
-          }
+          if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);
         }
       }
       localWorkflows = Array.from(wfMap.values());
     }
 
-    // Generate suggestions and openings from LOCAL arrays (not stale state)
-    const localSuggestions = generateAutoFillSuggestions(
-      company, localTools, localWorkflows,
-      allPageTexts.map(p => ({ text: p.text, url: p.url }))
-    );
-    const localOpenings = generateReconOpenings(
-      localTools, localWorkflows, company,
-      allPageTexts.map(p => ({ text: p.text, url: p.url }))
-    );
+    const localSuggestions = generateAutoFillSuggestions(company, localTools, localWorkflows, allPageTexts.map(p => ({ text: p.text, url: p.url })));
+    const localOpenings = generateReconOpenings(localTools, localWorkflows, company, allPageTexts.map(p => ({ text: p.text, url: p.url })));
 
-    // Update React state from the same local arrays
     setDetectedTools(localTools);
     setInferredWorkflows(localWorkflows);
     setSuggestions(localSuggestions);
     setOpenings(localOpenings);
 
-    // Save scan results into company so state survives navigation
     updateCompany(company.id, {
       reconFindings: {
         companyId: company.id,
@@ -287,7 +283,6 @@ export default function AutoFillReconPage() {
       }
     });
 
-    // Progress summary (totalSources calculation removed as unused)
     setScanStatus('done');
     setFetchProgress(`Completed: ${urlsToScan.length} URLs fetched + ${pastedUrls.length} pasted sources analyzed`);
   };
@@ -390,7 +385,131 @@ export default function AutoFillReconPage() {
     });
   };
 
-  // ─── Render ──────────────────────────────────────────────────
+  // ─── People Signal Handlers ───────────────────────────────────
+
+  const handleAnalyzePeopleText = () => {
+    const text = manualPeopleText.trim();
+    if (!text) return;
+    setPeopleAnalyzing(true);
+    try {
+      const result = analyzePeopleText(text, peopleSourceType, peopleSourceUrl || company.basic.website);
+      setPeopleRoleMap(result.roleMap);
+      setPeopleStakeholderHyps(result.stakeholderHypotheses);
+      setPeopleHiringSignals(result.hiringSignals);
+      setPeopleMilestoneSignals(result.milestoneSignals);
+      setPeopleOutreachAngles(result.outreachAngles);
+      setPeopleDiscoveryQuestions(result.discoveryQuestions);
+      setPublicPeopleNotes(text.slice(0, 2000));
+      const roleTitles = result.roleMap.map(r => r.roleTitle).join(', ');
+      setPublicLeadershipText(roleTitles
+        ? `Detected roles: ${roleTitles}. ${result.roleMap.length} role signals identified from public source.`
+        : 'No specific roles detected from public source.');
+      const existing = company.reconFindings;
+      const peopleSignals: PeopleSignals = {
+        roleMap: result.roleMap,
+        stakeholderHypotheses: result.stakeholderHypotheses,
+        hiringSignals: result.hiringSignals,
+        milestoneSignals: result.milestoneSignals,
+        outreachAngles: result.outreachAngles,
+        discoveryQuestions: result.discoveryQuestions,
+      };
+      updateCompany(company.id, {
+        reconFindings: {
+          ...existing,
+          companyId: company.id,
+          publicPeopleNotes: text.slice(0, 2000),
+          publicLeadershipText: roleTitles ? `Detected roles: ${roleTitles}` : 'No specific roles detected',
+          peopleSignals,
+          scanDate: new Date().toISOString(),
+        } as ReconFindings,
+      });
+    } catch (err) {
+      console.error('People analysis error:', err);
+    }
+    setPeopleAnalyzing(false);
+  };
+
+  const handleClearPeopleNotes = () => {
+    setManualPeopleText('');
+    setPeopleSourceType('linkedin_company_about');
+    setPeopleSourceUrl('');
+    setPeopleRoleMap([]);
+    setPeopleStakeholderHyps([]);
+    setPeopleHiringSignals([]);
+    setPeopleMilestoneSignals([]);
+    setPeopleOutreachAngles([]);
+    setPeopleDiscoveryQuestions([]);
+    setPublicPeopleNotes('');
+    setPublicLeadershipText('');
+  };
+
+  const handleGenerateStakeholdersFromPeople = () => {
+    if (peopleStakeholderHyps.length === 0) return;
+    const newStakeholders = peopleStakeholderHyps.map((h, i) => ({
+      id: `stk-people-${Date.now()}-${i}`,
+      category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
+      name: undefined,
+      role: h.roleTitle,
+      department: h.department,
+      likelyPriorities: h.likelyConcern,
+      likelyObjections: 'Unknown — validate during discovery',
+      whatTheyCareAbout: h.likelyConcern,
+      bestTalkTrack: h.likelyDiscoveryQuestion,
+      bestProof: 'To be determined during discovery',
+      buyingInfluence: h.likelyBuyingInfluence,
+      accessStatus: 'unknown' as const,
+      confidence: h.confidence,
+    }));
+    updateCompany(company.id, {
+      stakeholders: [...company.stakeholders, ...newStakeholders],
+      reconFindings: {
+        ...company.reconFindings!,
+        peopleSignals: {
+          roleMap: peopleRoleMap,
+          stakeholderHypotheses: peopleStakeholderHyps,
+          hiringSignals: peopleHiringSignals,
+          milestoneSignals: peopleMilestoneSignals,
+          outreachAngles: peopleOutreachAngles,
+          discoveryQuestions: peopleDiscoveryQuestions,
+        },
+      },
+    });
+  };
+
+  const handleCopyPeopleIntelligence = () => {
+    const lines: string[] = [];
+    lines.push(`Public People Intelligence for ${company.basic.name}`);
+    lines.push('='.repeat(50));
+    if (peopleRoleMap.length > 0) {
+      peopleRoleMap.forEach(r => lines.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`));
+      lines.push('');
+    }
+    lines.push('STAKEHOLDER HYPOTHESES');
+    if (peopleStakeholderHyps.length > 0) {
+      peopleStakeholderHyps.forEach(h => lines.push(`  ${h.roleTitle} — ${h.likelyConcern}`));
+      lines.push('');
+    }
+    lines.push('HIRING SIGNALS');
+    if (peopleHiringSignals.length > 0) {
+      peopleHiringSignals.forEach(h => lines.push(`  ${h.openRole} (${h.department})`));
+      lines.push('');
+    }
+    lines.push('MILESTONE SIGNALS');
+    if (peopleMilestoneSignals.length > 0) {
+      peopleMilestoneSignals.forEach(m => lines.push(`  ${m.description} [${m.milestoneType}]`));
+      lines.push('');
+    }
+    lines.push('OUTREACH ANGLES');
+    if (peopleOutreachAngles.length > 0) {
+      peopleOutreachAngles.forEach(o => lines.push(`  ${o.angleText}`));
+      lines.push('');
+    }
+    lines.push('DISCOVERY QUESTIONS');
+    if (peopleDiscoveryQuestions.length > 0) {
+      peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`));
+    }
+    navigator.clipboard.writeText(lines.join('\n'));
+  };
 
   const tabs: { key: Tab; label: string; icon: string }[] = [
     { key: 'discover', label: '1. Discover', icon: '🔗' },
@@ -921,62 +1040,248 @@ export default function AutoFillReconPage() {
       {activeTab === 'people' && (
         <div className="card">
           <div className="card-header">
-            <span className="input-label" style={{ margin: 0 }}>👤 Public People & Role Notes</span>
+            <span className="input-label" style={{ margin: 0 }}>👤 Public People & Role Signals</span>
+            {peopleRoleMap.length > 0 && <span className="badge badge-purple" style={{ fontSize: 10 }}>{peopleRoleMap.length} roles</span>}
           </div>
           <div className="card-body">
+
+            {/* Safety Notice */}
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)',
+              borderRadius: 6, padding: '8px 12px', marginBottom: 16, fontSize: 11, color: '#94a3b8'
+            }}>
+              🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
+            </div>
+
+            {/* Source Type & URL */}
+            <div className="flex" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: '0 0 200px' }}>
+                <label className="input-label" style={{ fontSize: 11 }}>Source Type</label>
+                <select
+                  className="input"
+                  value={peopleSourceType}
+                  onChange={e => setPeopleSourceType(e.target.value as PeopleSignalSourceType)}
+                  style={{ fontSize: 12 }}
+                >
+                  <option value="linkedin_company_about">LinkedIn Company About</option>
+                  <option value="linkedin_company_post">LinkedIn Public Company Post</option>
+                  <option value="linkedin_job_post">LinkedIn Public Job Post</option>
+                  <option value="company_team_page">Company Team Page</option>
+                  <option value="leadership_page">Leadership Page</option>
+                  <option value="press_release">Press Release</option>
+                  <option value="careers_page">Careers Page</option>
+                  <option value="manual_role_notes">Manual Role Notes</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="input-label" style={{ fontSize: 11 }}>Source URL</label>
+                <input
+                  className="input"
+                  value={peopleSourceUrl}
+                  onChange={e => setPeopleSourceUrl(e.target.value)}
+                  placeholder="https://www.linkedin.com/company/..."
+                  style={{ fontSize: 12 }}
+                />
+              </div>
+            </div>
+
+            {/* Public Text Textarea */}
             <div className="input-group">
-              <label className="input-label">Paste Public LinkedIn Company About / Jobs / Team Page Text</label>
-              <p style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
-                Paste public text from LinkedIn company pages, team pages, leadership pages, or press releases.
-                Do not paste private LinkedIn profile pages.
-              </p>
+              <label className="input-label">Paste Public People / Company Text</label>
               <textarea
                 className="input"
-                rows={6}
+                rows={5}
                 value={manualPeopleText}
                 onChange={e => setManualPeopleText(e.target.value)}
-                placeholder="Paste public company description, team page text, or leadership info here..."
+                placeholder="Paste publicly available text from LinkedIn company pages, team pages, leadership pages, press releases, careers pages, or your own manual role notes..."
+                style={{ fontSize: 12 }}
               />
             </div>
 
+            {/* Action Buttons */}
             {manualPeopleText && (
-              <div style={{ marginTop: 12 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => {
-                  // Extract role hints from pasted text
-                  const roles = [
-                    'CEO', 'Founder', 'CTO', 'COO', 'CFO', 'CMO', 'VP',
-                    'Head of', 'Director', 'Manager', 'Lead',
-                  ];
-                  const foundRoles = roles.filter(r => manualPeopleText.includes(r));
-                  setPublicPeopleNotes(manualPeopleText.slice(0, 2000));
-                  setPublicLeadershipText(foundRoles.length > 0
-                    ? `Detected roles: ${foundRoles.join(', ')}. Extracted from pasted public text.`
-                    : 'No specific roles detected. Review text manually.');
-                }}>
-                  Analyze Pasted Text
+              <div className="flex" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleAnalyzePeopleText}
+                  disabled={peopleAnalyzing}
+                >
+                  {peopleAnalyzing ? 'Analyzing...' : '🔍 Analyze Public People Notes'}
+                </button>
+                <button className="btn btn-secondary" onClick={handleClearPeopleNotes}>
+                  🗑️ Clear People Notes
                 </button>
               </div>
             )}
 
-            {publicLeadershipText && (
-              <div style={{ marginTop: 12, padding: 10, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 12 }}>
-                <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                  <span style={{ color: '#e2e8f0', fontWeight: 600 }}>Leadership Analysis</span>
-                  <span className="badge badge-purple" style={{ fontSize: 10 }}>User Provided / Public Pasted</span>
+            {/* Analysis Results */}
+            {peopleRoleMap.length > 0 && (
+              <div style={{ marginTop: 16, display: 'grid', gap: 16 }}>
+
+                {/* Role Map */}
+                <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                  <span className="input-label" style={{ fontSize: 12 }}>🗺️ Role Map ({peopleRoleMap.length})</span>
+                  <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                    {peopleRoleMap.map((r, i) => (
+                      <div key={i} style={{
+                        padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                        border: '1px solid #2a3a5c', fontSize: 11,
+                      }}>
+                        <div className="flex items-center justify-between">
+                          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{r.roleTitle}</span>
+                          <div className="flex" style={{ gap: 4 }}>
+                            <span className="badge badge-amber" style={{ fontSize: 9 }}>{r.department}</span>
+                            <span className={`badge ${r.confidence === 'High' ? 'badge-green' : r.confidence === 'Medium' ? 'badge-amber' : 'badge-red'}`} style={{ fontSize: 9 }}>{r.confidence}</span>
+                          </div>
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{r.evidence.slice(0, 120)}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div style={{ color: '#94a3b8', fontSize: 11 }}>{publicLeadershipText}</div>
-                {manualPeopleText && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
-                    <div>📝 Pasted text stored as public source ({manualPeopleText.length} chars)</div>
-                    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm" onClick={() => {
-                        navigator.clipboard.writeText(`Public People Notes\n${'='.repeat(40)}\n${publicLeadershipText}`);
-                      }}>📋 Copy</button>
+
+                {/* Stakeholder Hypotheses */}
+                {peopleStakeholderHyps.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>👥 Stakeholder Hypotheses ({peopleStakeholderHyps.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleStakeholderHyps.map((h, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h.roleTitle}</span>
+                            <span className={`badge ${h.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 9 }}>{h.confidence}</span>
+                          </div>
+                          <div style={{ color: '#94a3b8', marginTop: 2 }}>Concern: {h.likelyConcern}</div>
+                          <div style={{ color: '#3b82f6', marginTop: 2 }}>❓ {h.likelyDiscoveryQuestion}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Influence: {'⭐'.repeat(h.likelyBuyingInfluence)}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
+
+                {/* Hiring Signals */}
+                {peopleHiringSignals.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>📋 Hiring Signals ({peopleHiringSignals.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleHiringSignals.map((h, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h.openRole || h.roleGap}</span>
+                            {h.department && <span className="badge badge-blue" style={{ fontSize: 9 }}>{h.department}</span>}
+                          </div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{h.evidence.slice(0, 120)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Milestone Signals */}
+                {peopleMilestoneSignals.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>🏆 Milestone Signals ({peopleMilestoneSignals.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleMilestoneSignals.map((m, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{m.description}</span>
+                            <span className="badge badge-amber" style={{ fontSize: 9 }}>{m.milestoneType}</span>
+                          </div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{m.evidence.slice(0, 120)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Outreach Angles */}
+                {peopleOutreachAngles.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>🎯 Outreach Angles ({peopleOutreachAngles.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleOutreachAngles.map((o, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div style={{ color: '#10b981' }}>{o.angleText}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Target: {o.targetRole} · Confidence: {o.confidence}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Discovery Questions */}
+                {peopleDiscoveryQuestions.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>❓ Discovery Questions ({peopleDiscoveryQuestions.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleDiscoveryQuestions.map((q, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#3b82f6' }}>❓ {q.question}</span>
+                            <span className="badge badge-purple" style={{ fontSize: 9 }}>{q.targetRole}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Integration Buttons */}
+                <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                  <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={handleGenerateStakeholdersFromPeople}
+                      disabled={peopleStakeholderHyps.length === 0}
+                    >
+                      👥 Generate Stakeholders from People Notes
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={handleCopyPeopleIntelligence}>
+                      📋 Copy People Intelligence Brief
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
+                    Source: {peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || 'No URL provided'}
+                  </div>
+                </div>
+
               </div>
             )}
+
+            {peopleRoleMap.length === 0 && manualPeopleText.length > 0 && !peopleAnalyzing && (
+              <div style={{
+                marginTop: 16, padding: 16, background: '#0f1525', borderRadius: 6,
+                border: '1px solid #2a3a5c', textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 12, color: '#64748b' }}>
+                  Click <strong>Analyze Public People Notes</strong> above to generate role signals, stakeholder hypotheses, hiring signals, milestone signals, outreach angles, and discovery questions from the pasted text.
+                </div>
+              </div>
+            )}
+
+            {peopleAnalyzing && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#94a3b8', fontSize: 12 }}>
+                🧠 Analyzing public people text...
+              </div>
+            )}
+
           </div>
         </div>
       )}

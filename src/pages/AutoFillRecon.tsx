@@ -415,12 +415,17 @@ export default function AutoFillReconPage() {
       };
       updateCompany(company.id, {
         reconFindings: {
-          ...existing,
           companyId: company.id,
+          discoveredUrls: existing?.discoveredUrls || [],
+          detectedTools: existing?.detectedTools || [],
+          inferredWorkflows: existing?.inferredWorkflows || [],
+          autoFillSuggestions: existing?.autoFillSuggestions || [],
+          openings: existing?.openings || [],
           publicPeopleNotes: text.slice(0, 2000),
           publicLeadershipText: roleTitles ? `Detected roles: ${roleTitles}` : 'No specific roles detected',
           peopleSignals,
           scanDate: new Date().toISOString(),
+          status: existing?.status || 'analyzed',
         } as ReconFindings,
       });
     } catch (err) {
@@ -441,6 +446,24 @@ export default function AutoFillReconPage() {
     setPeopleDiscoveryQuestions([]);
     setPublicPeopleNotes('');
     setPublicLeadershipText('');
+    if (company.reconFindings) {
+      updateCompany(company.id, {
+        reconFindings: {
+          ...company.reconFindings,
+          publicPeopleNotes: '',
+          publicLeadershipText: '',
+          peopleSignals: {
+            roleMap: [],
+            stakeholderHypotheses: [],
+            hiringSignals: [],
+            milestoneSignals: [],
+            outreachAngles: [],
+            discoveryQuestions: [],
+          },
+          scanDate: new Date().toISOString(),
+        },
+      });
+    }
   };
 
   const handleGenerateStakeholdersFromPeople = () => {
@@ -521,6 +544,14 @@ export default function AutoFillReconPage() {
     { key: 'people', label: 'People', icon: '👤' },
     { key: 'apply', label: 'Apply', icon: '✅' },
   ];
+
+  const hasPeopleSignals =
+    peopleRoleMap.length > 0 ||
+    peopleStakeholderHyps.length > 0 ||
+    peopleHiringSignals.length > 0 ||
+    peopleMilestoneSignals.length > 0 ||
+    peopleOutreachAngles.length > 0 ||
+    peopleDiscoveryQuestions.length > 0;
 
   return (
     <div>
@@ -1115,7 +1146,7 @@ export default function AutoFillReconPage() {
             )}
 
             {/* Analysis Results */}
-            {peopleRoleMap.length > 0 && (
+            {hasPeopleSignals && (
               <div style={{ marginTop: 16, display: 'grid', gap: 16 }}>
 
                 {/* Role Map */}
@@ -1260,12 +1291,13 @@ export default function AutoFillReconPage() {
                   <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
                     Source: {peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || 'No URL provided'}
                   </div>
-                </div>
+            </div>
 
-              </div>
+            </div>
+
             )}
 
-            {peopleRoleMap.length === 0 && manualPeopleText.length > 0 && !peopleAnalyzing && (
+            {!hasPeopleSignals && manualPeopleText.length > 0 && !peopleAnalyzing && (
               <div style={{
                 marginTop: 16, padding: 16, background: '#0f1525', borderRadius: 6,
                 border: '1px solid #2a3a5c', textAlign: 'center',

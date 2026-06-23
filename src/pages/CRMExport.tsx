@@ -128,8 +128,38 @@ export default function CRMExportPage() {
       peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`));
       lines.push('');
     }
-    if (peopleRoleMap.length === 0 && peopleStakeholderHyps.length === 0) {
+  if (peopleRoleMap.length === 0 && peopleStakeholderHyps.length === 0) {
       lines.push('  No people intelligence available. Use Auto-Fill Recon → People tab to analyze public people notes.');
+      lines.push('');
+    }
+
+    // ─── Role Gaps & Missing People Data ────────────────
+    const roleGaps = peopleRoleMap.filter(r => r.roleType === 'unknown_decision_maker_gap');
+    if (roleGaps.length > 0) {
+      lines.push('ROLE GAPS IDENTIFIED');
+      roleGaps.forEach(g => lines.push(`  ${g.roleTitle} — ${g.evidence}`));
+      lines.push('');
+    }
+
+    // Discovery questions for unknown roles
+    const unknownRoleQuestions = peopleDiscoveryQuestions.filter(q =>
+      q.targetRole === 'Unknown Decision-Maker' || q.confidence === 'Low'
+    );
+    if (unknownRoleQuestions.length > 0) {
+      lines.push('DISCOVERY QUESTIONS FOR UNKNOWN ROLES');
+      unknownRoleQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`));
+      lines.push('');
+    }
+
+    // Source queue summary from publicPeopleNotes and publicLeadershipText
+    if (recon?.publicPeopleNotes) {
+      lines.push('PEOPLE NOTES SUMMARY');
+      lines.push(`  ${recon.publicPeopleNotes.slice(0, 200)}`);
+      lines.push('');
+    }
+    if (recon?.publicLeadershipText) {
+      lines.push('LEADERSHIP SIGNALS');
+      lines.push(`  ${recon.publicLeadershipText.slice(0, 200)}`);
       lines.push('');
     }
 

@@ -312,7 +312,23 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* API Placeholder */}
+        {/* People Data Providers */}
+        <div className="card">
+          <div className="card-header"><span className="input-label" style={{ margin: 0 }}>👥 People Data Providers (Optional)</span></div>
+          <div className="card-body">
+            <p style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+              Future integrations can support official/compliant APIs for public people data.
+              No automated LinkedIn scraping is performed — all sources are opened in your browser for manual review.
+            </p>
+            <ul style={{ fontSize: 12, color: '#64748b', margin: 0, paddingLeft: 16, lineHeight: 1.8 }}>
+              <li>Official LinkedIn API (if authorized)</li>
+              <li>Search API provider (Google, Bing)</li>
+              <li>Company enrichment API (Clearbit, Crunchbase)</li>
+              <li>Public web search API</li>
+            </ul>
+          </div>
+        </div>
+
         <div className="card">
           <div className="card-header"><span className="input-label" style={{ margin: 0 }}>🔌 API Integration (Future)</span></div>
           <div className="card-body">

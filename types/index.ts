@@ -572,6 +572,7 @@ export interface ReconFindings {
   openings: ReconOpening[];
   publicPeopleNotes: string;
   publicLeadershipText: string;
+  peopleSignals?: PeopleSignals;
   scanDate: string;
   status: 'pending' | 'scanned' | 'analyzed' | 'applied';
 }
@@ -588,4 +589,152 @@ export interface ReconApiClientSettings {
   enableWorkflowInference: boolean;
   enablePeopleRoleInference: boolean;
   defaultConfidenceThreshold: ConfidenceLevel;
+}
+// ============================================================
+// Public People & Role Signal Types (v0.4)
+// ============================================================
+
+export type PeopleSignalSourceType =
+  | 'linkedin_company_about'
+  | 'linkedin_company_post'
+  | 'linkedin_job_post'
+  | 'linkedin_employee_profile'
+  | 'linkedin_people_search'
+  | 'linkedin_company_posts_feed'
+  | 'company_team_page'
+  | 'leadership_page'
+  | 'press_release'
+  | 'careers_page'
+  | 'manual_role_notes';
+
+export interface RoleMapEntry {
+  roleType: 'executive_founder' | 'sales_gtm' | 'operations' | 'finance_admin' | 'support' | 'technical_product' | 'security_compliance' | 'unknown_decision_maker_gap';
+  roleTitle: string;
+  department: string;
+  evidence: string;
+  confidence: ConfidenceLevel;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface StakeholderHypothesis {
+  id: string;
+  roleTitle: string;
+  department: string;
+  likelyConcern: string;
+  likelyBuyingInfluence: number;
+  likelyDiscoveryQuestion: string;
+  confidence: ConfidenceLevel;
+  evidence: string;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface HiringSignal {
+  id: string;
+  openRole: string;
+  department: string;
+  growingDepartment: string;
+  roleGap: string;
+  newInitiative: string;
+  repeatedNeed: string;
+  toolProcessHint: string;
+  evidence: string;
+  confidence: ConfidenceLevel;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface MilestoneSignal {
+  id: string;
+  milestoneType: 'launch' | 'partnership' | 'funding' | 'award' | 'growth' | 'new_product' | 'customer_win' | 'public_celebration' | 'other';
+  description: string;
+  evidence: string;
+  confidence: ConfidenceLevel;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface OutreachAngle {
+  id: string;
+  angleText: string;
+  targetRole: string;
+  confidence: ConfidenceLevel;
+  evidence: string;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface PeopleDiscoveryQuestion {
+  id: string;
+  targetRole: string;
+  question: string;
+  category: 'founder_ceo' | 'operations' | 'sales_gtm' | 'support' | 'finance_admin' | 'security_compliance' | 'technical_product';
+  confidence: ConfidenceLevel;
+  evidence: string;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+}
+
+export interface PeopleSignals {
+  roleMap: RoleMapEntry[];
+  stakeholderHypotheses: StakeholderHypothesis[];
+  hiringSignals: HiringSignal[];
+  milestoneSignals: MilestoneSignal[];
+  outreachAngles: OutreachAngle[];
+  discoveryQuestions: PeopleDiscoveryQuestion[];
+}
+
+// ============================================================
+// Public People Source Discovery Types (v0.5)
+// ============================================================
+
+export type PeopleSourceQueueStatus =
+  | 'suggested'
+  | 'opened'
+  | 'pasted'
+  | 'analyzed'
+  | 'skipped';
+
+export interface PeopleSourceQueueItem {
+  id: string;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+  searchUrl?: string;
+  reasonSuggested: string;
+  status: PeopleSourceQueueStatus;
+  pastedText?: string;
+  confidence: ConfidenceLevel;
+}
+
+// ============================================================
+// LinkedIn Discovery Types (v0.6)
+// ============================================================
+
+export interface DiscoveredEmployee {
+  id: string;
+  name: string;
+  role?: string;
+  linkedInUrl?: string;
+  profileSearchUrl?: string;
+  department?: string;
+  source: 'linkedin_company_page' | 'linkedin_employee_profile' | 'manual_entry';
+  status: 'suggested' | 'opened' | 'analyzed' | 'skipped';
+  pastedText?: string;
+  roleMapEntries?: RoleMapEntry[];
+  confidence: ConfidenceLevel;
+}
+
+export interface LinkedInPostSignal {
+  id: string;
+  postUrl?: string;
+  authorName?: string;
+  authorRole?: string;
+  postType: 'company_post' | 'employee_post' | 'job_posting' | 'unknown';
+  keyThemes: string[];
+  hiringRelevance: string[];
+  painPointHints: string[];
+  opportunityHints: string[];
+  confidence: ConfidenceLevel;
+  pastedText?: string;
 }

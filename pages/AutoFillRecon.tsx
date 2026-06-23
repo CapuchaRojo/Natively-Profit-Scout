@@ -12,10 +12,20 @@ import {
   applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
+import { analyzePeopleText } from '../services/peopleSignalEngine';
+import {
+  discoverPeopleSources, generatePreliminaryPeopleSignals,
+  discoverLinkedInEmployees, discoverLinkedInPosts,
+  analyzeLinkedInPostText, extractEmployeesFromLinkedInText,
+} from '../services/publicSourceDiscovery';
 import type {
   Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
-  ConfidenceLevel, SourceLabel
+  ConfidenceLevel, PeopleSignalSourceType,
+  RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
+  MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
+  PeopleSourceQueueItem, PeopleSourceQueueStatus,
+  DiscoveredEmployee, LinkedInPostSignal,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
@@ -27,25 +37,74 @@ export default function AutoFillReconPage() {
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
 
-  const [activeTab, setActiveTab] = useState<Tab>('discover');
+const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [homepageUrl, setHomepageUrl] = useState(company?.basic.website || '');
   const [discoveredUrls, setDiscoveredUrls] = useState<ReconDiscoveredUrl[]>([]);
   const [detectedTools, setDetectedTools] = useState<DetectedTool[]>([]);
   const [inferredWorkflows, setInferredWorkflows] = useState<InferredWorkflow[]>([]);
   const [suggestions, setSuggestions] = useState<ReconAutoFillSuggestion[]>([]);
   const [openings, setOpenings] = useState<ReconOpening[]>([]);
-  const [manualPeopleText, setManualPeopleText] = useState('');
-  const [publicPeopleNotes, setPublicPeopleNotes] = useState('');
-  const [publicLeadershipText, setPublicLeadershipText] = useState('');
   const [extraUrls, setExtraUrls] = useState('');
   const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
   const [scanError, setScanError] = useState('');
   const [fetchProgress, setFetchProgress] = useState('');
+  const [manualPasteText, setManualPasteText] = useState('');
 
-  // Update URL when company changes
+  // People Signal Engine state
+  const [manualPeopleText, setManualPeopleText] = useState('');
+  const [publicPeopleNotes, setPublicPeopleNotes] = useState('');
+  const [publicLeadershipText, setPublicLeadershipText] = useState('');
+  const [peopleSourceType, setPeopleSourceType] = useState<PeopleSignalSourceType>('linkedin_company_about');
+  const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
+  const [peopleRoleMap, setPeopleRoleMap] = useState<RoleMapEntry[]>([]);
+  const [peopleStakeholderHyps, setPeopleStakeholderHyps] = useState<StakeholderHypothesis[]>([]);
+  const [peopleHiringSignals, setPeopleHiringSignals] = useState<HiringSignal[]>([]);
+  const [peopleMilestoneSignals, setPeopleMilestoneSignals] = useState<MilestoneSignal[]>([]);
+  const [peopleOutreachAngles, setPeopleOutreachAngles] = useState<OutreachAngle[]>([]);
+  const [peopleDiscoveryQuestions, setPeopleDiscoveryQuestions] = useState<PeopleDiscoveryQuestion[]>([]);
+  const [peopleAnalyzing, setPeopleAnalyzing] = useState(false);
+  const [sourceQueue, setSourceQueue] = useState<PeopleSourceQueueItem[]>([]);
+  const [sourceDiscovering, setSourceDiscovering] = useState(false);
+  const [reconGenerating, setReconGenerating] = useState(false);
+  const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
+  const [stakeholderGenMessage, setStakeholderGenMessage] = useState<string | null>(null);
+  const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
+
+  // Stakeholder preview, copy feedback, CRM brief
+  const [generatedStakeholders, setGeneratedStakeholders] = useState<Stakeholder[]>([]);
+  const [copyFeedback, setCopyFeedback] = useState<{ label: string; message: string; type: 'success' | 'error' } | null>(null);
+  const [showBriefPreview, setShowBriefPreview] = useState(false);
+  const [briefText, setBriefText] = useState('');
+  // Restore recon state from company on mount
   useEffect(() => {
-    if (company?.basic.website) {
-      setHomepageUrl(company.basic.website);
+    if (company?.reconFindings) {
+      const rf = company.reconFindings;
+      if (rf.status === 'scanned' || rf.status === 'analyzed') {
+        setDiscoveredUrls(rf.discoveredUrls || []);
+        setDetectedTools(rf.detectedTools || []);
+        setInferredWorkflows(rf.inferredWorkflows || []);
+        setSuggestions(rf.autoFillSuggestions || []);
+        setOpenings(rf.openings || []);
+        // Restore people signals
+        const ps = rf.peopleSignals;
+        if (ps) {
+          setPeopleRoleMap(ps.roleMap || []);
+          setPeopleStakeholderHyps(ps.stakeholderHypotheses || []);
+          setPeopleHiringSignals(ps.hiringSignals || []);
+          setPeopleMilestoneSignals(ps.milestoneSignals || []);
+          setPeopleOutreachAngles(ps.outreachAngles || []);
+          setPeopleDiscoveryQuestions(ps.discoveryQuestions || []);
+        }
+        // Restore people source mode from persisted note
+        if (rf.publicPeopleNotes === 'Generated from existing recon data') {
+          setPeopleSourceMode('recon');
+        } else if (rf.publicPeopleNotes && rf.publicPeopleNotes.length > 0) {
+          setPeopleSourceMode('manual');
+        }
+        if (rf.status === 'analyzed') { setScanStatus('done'); }
+        if (rf.status === 'analyzed') { setActiveTab('fetch'); }
+        else if (rf.discoveredUrls.length > 0) { setActiveTab('fetch'); }
+      }
     }
   }, [company?.id]);
 
@@ -67,6 +126,13 @@ export default function AutoFillReconPage() {
     setScanStatus('discovering');
     setScanError('');
 
+    // Clear local state for a fresh scan
+    setDiscoveredUrls([]);
+    setDetectedTools([]);
+    setInferredWorkflows([]);
+    setSuggestions([]);
+    setOpenings([]);
+
     try {
       let homepageHtml: string | undefined;
 
@@ -83,6 +149,23 @@ export default function AutoFillReconPage() {
 
       const urls = discoverPublicUrls(homepageUrl, homepageHtml);
       setDiscoveredUrls(urls);
+
+      // Persist discovered URLs immediately so state survives navigation
+      updateCompany(company.id, {
+        reconFindings: {
+          companyId: company.id,
+          discoveredUrls: urls,
+          detectedTools: [],
+          inferredWorkflows: [],
+          autoFillSuggestions: [],
+          openings: [],
+          publicPeopleNotes: '',
+          publicLeadershipText: '',
+          scanDate: new Date().toISOString(),
+          status: 'scanned',
+        }
+      });
+
       setScanStatus('idle');
       setActiveTab('fetch');
     } catch (err) {
@@ -133,7 +216,6 @@ export default function AutoFillReconPage() {
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
-
       const result = await fetchPublicUrl(urlInfo.url);
       if (result.success && result.html) {
         updatedUrls = updatedUrls.map(u =>
@@ -142,14 +224,10 @@ export default function AutoFillReconPage() {
             : u
         );
         allPageTexts.push({ text: result.text || '', url: urlInfo.url, html: result.html });
-
-        // Tool fingerprinting
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
-          const fp = fingerprintPage(result.html, urlInfo.url);
-          localDetected.push(...fp.detected);
-          const inferred = inferToolsFromText(result.text || '', urlInfo.url);
-          localDetected.push(...inferred);
+          localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
+          localDetected.push(...inferToolsFromText(result.text || '', urlInfo.url));
         }
       } else if (result.blocked) {
         updatedUrls = updatedUrls.map(u =>
@@ -160,10 +238,19 @@ export default function AutoFillReconPage() {
           u.urlId === urlInfo.urlId ? { ...u, status: 'failed', notes: result.error || 'Failed' } : u
         );
       }
-
-      // Rate limiting delay
       if (i < urlsToScan.length - 1) {
         await new Promise(r => setTimeout(r, settings.scanDelayMs));
+      }
+    }
+
+    const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
+    for (const urlInfo of pastedUrls) {
+      if (urlInfo.fetchedText) {
+        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
+        if (settings.enableToolFingerprinting) {
+          const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
+          localDetected.push(...inferToolsFromText(urlInfo.fetchedText, urlInfo.url));
+        }
       }
     }
 
@@ -171,7 +258,6 @@ export default function AutoFillReconPage() {
     setFetchProgress('Analyzing...');
     setScanStatus('analyzing');
 
-    // Deduplicate local tools
     const toolMap = new Map<string, DetectedTool>();
     for (const t of localDetected) {
       const existing = toolMap.get(t.toolName);
@@ -181,42 +267,44 @@ export default function AutoFillReconPage() {
     }
     const localTools = Array.from(toolMap.values());
 
-    // Workflow inference — populate local array immediately
     let localWorkflows: InferredWorkflow[] = [];
     if (settings.enableWorkflowInference && allPageTexts.length > 0) {
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
-        const wf = inferWorkflowsFromText(page.text, page.url, localTools);
-        for (const w of wf) {
+        for (const w of inferWorkflowsFromText(page.text, page.url, localTools)) {
           const existing = wfMap.get(w.workflowName);
-          if (!existing || w.confidence === 'High') {
-            wfMap.set(w.workflowName, w);
-          }
+          if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);
         }
       }
       localWorkflows = Array.from(wfMap.values());
     }
 
-    // Generate suggestions and openings from LOCAL arrays (not stale state)
-    // This ensures workflow-derived data is included on the first scan
-    const localSuggestions = generateAutoFillSuggestions(
-      company, localTools, localWorkflows,
-      allPageTexts.map(p => ({ text: p.text, url: p.url }))
-    );
-    const localOpenings = generateReconOpenings(
-      localTools, localWorkflows, company,
-      allPageTexts.map(p => ({ text: p.text, url: p.url }))
-    );
+    const localSuggestions = generateAutoFillSuggestions(company, localTools, localWorkflows, allPageTexts.map(p => ({ text: p.text, url: p.url })));
+    const localOpenings = generateReconOpenings(localTools, localWorkflows, company, allPageTexts.map(p => ({ text: p.text, url: p.url })));
 
-    // Update React state from the same local arrays
     setDetectedTools(localTools);
     setInferredWorkflows(localWorkflows);
     setSuggestions(localSuggestions);
     setOpenings(localOpenings);
 
+    updateCompany(company.id, {
+      reconFindings: {
+        companyId: company.id,
+        discoveredUrls: updatedUrls,
+        detectedTools: localTools,
+        inferredWorkflows: localWorkflows,
+        autoFillSuggestions: localSuggestions,
+        openings: localOpenings,
+        publicPeopleNotes: publicPeopleNotes,
+        publicLeadershipText: publicLeadershipText,
+        scanDate: new Date().toISOString(),
+        status: 'analyzed',
+      }
+    });
+
     setScanStatus('done');
-    setFetchProgress(`Completed: ${urlsToScan.length} URLs scanned`);
+    setFetchProgress(`Completed: ${urlsToScan.length} URLs fetched + ${pastedUrls.length} pasted sources analyzed`);
   };
 
   // ─── Step 3: Apply Findings ─────────────────────────────────
@@ -257,6 +345,32 @@ export default function AutoFillReconPage() {
   };
 
   const handleApplyAllToProfile = () => {
+    // ── People Intelligence: preserve from current state or existing record ──
+    const existingPeopleSignals = company.reconFindings?.peopleSignals;
+    const currentPeopleSignals: PeopleSignals = {
+      roleMap: peopleRoleMap,
+      stakeholderHypotheses: peopleStakeholderHyps,
+      hiringSignals: peopleHiringSignals,
+      milestoneSignals: peopleMilestoneSignals,
+      outreachAngles: peopleOutreachAngles,
+      discoveryQuestions: peopleDiscoveryQuestions,
+    };
+    const hasCurrentPeopleSignals =
+      peopleRoleMap.length > 0 ||
+      peopleStakeholderHyps.length > 0 ||
+      peopleHiringSignals.length > 0 ||
+      peopleMilestoneSignals.length > 0 ||
+      peopleOutreachAngles.length > 0 ||
+      peopleDiscoveryQuestions.length > 0;
+    const emptyPeopleSignals: PeopleSignals = {
+      roleMap: [],
+      stakeholderHypotheses: [],
+      hiringSignals: [],
+      milestoneSignals: [],
+      outreachAngles: [],
+      discoveryQuestions: [],
+    };
+
     const findings: ReconFindings = {
       companyId: company.id,
       discoveredUrls,
@@ -264,8 +378,11 @@ export default function AutoFillReconPage() {
       inferredWorkflows,
       autoFillSuggestions: suggestions,
       openings,
-      publicPeopleNotes,
-      publicLeadershipText,
+      peopleSignals: hasCurrentPeopleSignals
+        ? currentPeopleSignals
+        : existingPeopleSignals || emptyPeopleSignals,
+      publicPeopleNotes: publicPeopleNotes || company.reconFindings?.publicPeopleNotes || '',
+      publicLeadershipText: publicLeadershipText || company.reconFindings?.publicLeadershipText || '',
       scanDate: new Date().toISOString(),
       status: 'applied',
     };
@@ -317,7 +434,407 @@ export default function AutoFillReconPage() {
     });
   };
 
-  // ─── Render ──────────────────────────────────────────────────
+  // ─── People Signal Handlers ───────────────────────────────────
+
+  const handleAnalyzePeopleText = () => {
+    const text = manualPeopleText.trim();
+    if (!text) return;
+    setPeopleAnalyzing(true);
+    try {
+      const result = analyzePeopleText(text, peopleSourceType, peopleSourceUrl || company.basic.website);
+      setPeopleRoleMap(result.roleMap);
+      setPeopleStakeholderHyps(result.stakeholderHypotheses);
+      setPeopleHiringSignals(result.hiringSignals);
+      setPeopleMilestoneSignals(result.milestoneSignals);
+      setPeopleOutreachAngles(result.outreachAngles);
+      setPeopleDiscoveryQuestions(result.discoveryQuestions);
+      setPublicPeopleNotes(text.slice(0, 2000));
+      setPeopleSourceMode('manual');
+      const roleTitles = result.roleMap.map(r => r.roleTitle).join(', ');
+      setPublicLeadershipText(roleTitles
+        ? `Detected roles: ${roleTitles}. ${result.roleMap.length} role signals identified from public source.`
+        : 'No specific roles detected from public source.');
+      const existing = company.reconFindings;
+      const peopleSignals: PeopleSignals = {
+        roleMap: result.roleMap,
+        stakeholderHypotheses: result.stakeholderHypotheses,
+        hiringSignals: result.hiringSignals,
+        milestoneSignals: result.milestoneSignals,
+        outreachAngles: result.outreachAngles,
+        discoveryQuestions: result.discoveryQuestions,
+      };
+      updateCompany(company.id, {
+        reconFindings: {
+          companyId: company.id,
+          discoveredUrls: existing?.discoveredUrls || [],
+          detectedTools: existing?.detectedTools || [],
+          inferredWorkflows: existing?.inferredWorkflows || [],
+          autoFillSuggestions: existing?.autoFillSuggestions || [],
+          openings: existing?.openings || [],
+          publicPeopleNotes: text.slice(0, 2000),
+          publicLeadershipText: roleTitles ? `Detected roles: ${roleTitles}` : 'No specific roles detected',
+          peopleSignals,
+          scanDate: new Date().toISOString(),
+          status: existing?.status || 'analyzed',
+        } as ReconFindings,
+      });
+    } catch (err) {
+      console.error('People analysis error:', err);
+    }
+    setPeopleAnalyzing(false);
+  };
+
+  const handleClearPeopleNotes = () => {
+    setManualPeopleText('');
+    setPeopleSourceType('linkedin_company_about');
+    setPeopleSourceUrl('');
+    setPeopleRoleMap([]);
+    setPeopleStakeholderHyps([]);
+    setPeopleHiringSignals([]);
+    setPeopleMilestoneSignals([]);
+    setPeopleOutreachAngles([]);
+    setPeopleDiscoveryQuestions([]);
+    setPublicPeopleNotes('');
+    setPublicLeadershipText('');
+    setPeopleSourceMode('none');
+    if (company.reconFindings) {
+      updateCompany(company.id, {
+        reconFindings: {
+          ...company.reconFindings,
+          publicPeopleNotes: '',
+          publicLeadershipText: '',
+          peopleSignals: {
+            roleMap: [],
+            stakeholderHypotheses: [],
+            hiringSignals: [],
+            milestoneSignals: [],
+            outreachAngles: [],
+            discoveryQuestions: [],
+          },
+          scanDate: new Date().toISOString(),
+        },
+      });
+    }
+  };
+  const handleGenerateStakeholdersFromPeople = () => {
+    // Use current state or fallback to existing recon
+    const hyps = peopleStakeholderHyps.length > 0
+      ? peopleStakeholderHyps
+      : (company.reconFindings?.peopleSignals?.stakeholderHypotheses || []);
+
+    if (hyps.length === 0) {
+      setStakeholderGenMessage('❌ No people stakeholder hypotheses available yet. Generate People Signals first.');
+      setGeneratedStakeholders([]);
+      return;
+    }
+
+    // Avoid duplicates: skip if same role+category already exists
+    const existingRoles = new Set(company.stakeholders.map(s => `${s.role}::${s.category}`));
+    const newStakeholders = hyps
+      .filter(h => {
+        const cat = h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const);
+        return !existingRoles.has(`${h.roleTitle}::${cat}`);
+      })
+      .map((h, i) => ({
+        id: `stk-people-${Date.now()}-${i}`,
+        category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
+        name: undefined as string | undefined,
+        role: h.roleTitle,
+        department: h.department,
+        likelyPriorities: h.likelyConcern,
+        likelyObjections: 'Unknown — validate during discovery',
+        whatTheyCareAbout: h.likelyConcern,
+        bestTalkTrack: h.likelyDiscoveryQuestion,
+        bestProof: 'To be determined during discovery',
+        buyingInfluence: h.likelyBuyingInfluence,
+        accessStatus: 'unknown' as const,
+        confidence: h.confidence,
+      }));
+
+    if (newStakeholders.length === 0) {
+      setStakeholderGenMessage('✅ Stakeholders already exist for these roles — no duplicates added.');
+      setGeneratedStakeholders(company.stakeholders.filter(s =>
+        hyps.some(h => h.roleTitle === s.role && (h.likelyBuyingInfluence >= 4 ? 'economic_buyer' : 'influencer') === s.category)
+      ));
+      return;
+    }
+
+    updateCompany(company.id, {
+      stakeholders: [...company.stakeholders, ...newStakeholders],
+      reconFindings: {
+        ...company.reconFindings!,
+        peopleSignals: {
+          roleMap: peopleRoleMap,
+          stakeholderHypotheses: peopleStakeholderHyps,
+          hiringSignals: peopleHiringSignals,
+          milestoneSignals: peopleMilestoneSignals,
+          outreachAngles: peopleOutreachAngles,
+          discoveryQuestions: peopleDiscoveryQuestions,
+        },
+      },
+    });
+
+    // Set preview stakeholders and success message
+    setGeneratedStakeholders(newStakeholders);
+    setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
+  };
+
+  // ─── CRM Brief & Copy Handler ────────────────────────────────
+
+  const generateCrmBriefText = (): string => {
+    const brief: string[] = [
+      `CRM-Ready Recon Brief: ${company.basic.name}`,
+      '='.repeat(50),
+      '',
+    ];
+
+    // People Intelligence section
+    if (hasPeopleSignals) {
+      brief.push('PEOPLE INTELLIGENCE');
+      if (peopleRoleMap.length > 0) {
+        brief.push('');
+        brief.push('Detected Roles:');
+        peopleRoleMap.forEach(r => brief.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`));
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('Stakeholder Hypotheses:');
+        peopleStakeholderHyps.forEach(h => brief.push(`  ${h.roleTitle} — ${h.likelyConcern}`));
+      }
+      if (peopleOutreachAngles.length > 0) {
+        brief.push('');
+        brief.push('Outreach Angles:');
+        peopleOutreachAngles.forEach(o => brief.push(`  ${o.angleText} (target: ${o.targetRole})`));
+      }
+      if (peopleDiscoveryQuestions.length > 0) {
+        brief.push('');
+        brief.push('Discovery Questions by Role:');
+        peopleDiscoveryQuestions.forEach(q => brief.push(`  [${q.targetRole}] ${q.question}`));
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('Suggested Stakeholder Records:');
+        peopleStakeholderHyps.forEach(h => {
+          const cat = h.likelyBuyingInfluence >= 4 ? 'Economic Buyer' : 'Influencer';
+          brief.push(`  ${h.roleTitle} — ${h.department} (${cat}, influence: ${h.likelyBuyingInfluence}/5)`);
+        });
+      }
+      if (peopleHiringSignals.length > 0) {
+        brief.push('');
+        brief.push('Hiring Signals:');
+        peopleHiringSignals.forEach(h => brief.push(`  ${h.openRole || h.roleGap} (${h.department})`));
+      }
+      if (peopleMilestoneSignals.length > 0) {
+        brief.push('');
+        brief.push('Milestone Signals:');
+        peopleMilestoneSignals.forEach(m => brief.push(`  ${m.description} [${m.milestoneType}]`));
+      }
+      brief.push('');
+      brief.push('Source: ' + (peopleSourceMode === 'recon'
+        ? 'Existing recon data'
+        : peopleSourceType.replace(/_/g, ' ') + (peopleSourceUrl ? ' — ' + peopleSourceUrl : '')));
+      brief.push('');
+      if (generatedStakeholders.length > 0) {
+        brief.push('GENERATED STAKEHOLDERS');
+        generatedStakeholders.forEach(s => {
+          brief.push(`  ${s.role} — ${s.department} (${s.category}, influence: ${s.buyingInfluence}/5, confidence: ${s.confidence})`);
+          brief.push(`    Priorities: ${s.likelyPriorities}`);
+          brief.push(`    Source: People Intelligence`);
+        });
+        brief.push('');
+      }
+      if (sourceQueue.length > 0) {
+        brief.push('Source Queue Summary:');
+        brief.push(`  ${sourceQueue.length} sources discovered`);
+        const byStatus: Record<string, number> = {};
+        sourceQueue.forEach(s => { byStatus[s.status] = (byStatus[s.status] || 0) + 1; });
+        Object.entries(byStatus).forEach(([k, v]) => brief.push(`    ${k}: ${v}`));
+        brief.push('');
+      }
+    }
+
+    // Tools section
+    if (detectedTools.length > 0) {
+      brief.push('DETECTED TOOLS');
+      detectedTools.forEach(t => brief.push(`  ${t.toolName} — ${t.evidence}`));
+      brief.push('');
+    }
+
+    // Workflows section
+    if (inferredWorkflows.length > 0) {
+      brief.push('INFERRED WORKFLOWS');
+      inferredWorkflows.forEach(w => brief.push(`  ${w.workflowName}: ${w.discoveryQuestion}`));
+      brief.push('');
+    }
+
+    // Openings section
+    if (openings.length > 0) {
+      brief.push('TOP OPENINGS');
+      openings.slice(0, 5).forEach(o => brief.push(`  ${o.title}\n    First Line: ${o.firstLine}\n    Discovery: ${o.discoveryQuestion}`));
+      brief.push('');
+      brief.push('SUGGESTED DEMO PROMPT');
+      const prompt = openings.find(o => o.suggestedBuildPrompt);
+      if (prompt) brief.push(`  ${prompt.suggestedBuildPrompt}`);
+      brief.push('');
+    }
+
+    if (!hasPeopleSignals && detectedTools.length === 0 && inferredWorkflows.length === 0 && openings.length === 0) {
+      brief.push('No recon data available yet. Run URL discovery or generate People Signals first.');
+      brief.push('');
+    }
+
+    return brief.join('\n');
+  };
+
+  const handleCopyToClipboard = async (label: string, textBuilder: () => string) => {
+    try {
+      const text = textBuilder();
+      await navigator.clipboard.writeText(text);
+      setCopyFeedback({ label, message: `✅ Copied ${label} to clipboard`, type: 'success' });
+      if (label === 'CRM-Ready Brief') {
+        setBriefText(text);
+        setShowBriefPreview(true);
+      }
+    } catch {
+      setCopyFeedback({ label, message: `❌ Clipboard copy failed — please try again or manually select the text`, type: 'error' });
+    }
+    setTimeout(() => setCopyFeedback(null), 4000);
+  };
+
+  // ─── People Source Discovery Handlers (v0.5) ──────────────────
+
+  const handleDiscoverPeopleSources = () => {
+    const companyName = company?.basic.name || '';
+    const website = company?.basic.website || homepageUrl;
+    if (!companyName && !website) return;
+    setSourceDiscovering(true);
+    try {
+      const sources = discoverPeopleSources(companyName, website);
+      setSourceQueue(sources);
+    } catch (err) {
+      console.error('Source discovery error:', err);
+    }
+    setSourceDiscovering(false);
+  };
+
+  const handleGeneratePreliminarySignals = () => {
+    if (!company) return;
+    setReconGenerating(true);
+    try {
+      const result = generatePreliminaryPeopleSignals(company, company.reconFindings);
+      if (result) {
+        // Clean up recon-derived evidence strings
+        const cleanReconEvidence = (evidence: string): string => {
+          const cleaned = evidence
+            .replace(/Generated from existing recon data/gi, '')
+            .replace(/Recon-based:.*?(?:roles?|stakeholder|signals?|suggestions?)[,.]*/gi, '')
+            .replace(/\.\.\./g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!cleaned || cleaned.length < 5) {
+            return 'Existing recon data suggests this role/department is present.';
+          }
+          return `Existing recon mentions ${cleaned}.`;
+        };
+
+        const cleanedRoleMap = result.roleMap.map(r => ({
+          ...r,
+          evidence: cleanReconEvidence(r.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedStakeholderHyps = result.stakeholderHypotheses.map(h => ({
+          ...h,
+          evidence: cleanReconEvidence(h.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedHiringSignals = result.hiringSignals.map(h => ({
+          ...h,
+          evidence: cleanReconEvidence(h.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedMilestoneSignals = result.milestoneSignals.map(m => ({
+          ...m,
+          evidence: cleanReconEvidence(m.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedOutreachAngles = result.outreachAngles.map(o => ({
+          ...o,
+          evidence: cleanReconEvidence(o.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedDiscoveryQuestions = result.discoveryQuestions.map(q => ({
+          ...q,
+          evidence: cleanReconEvidence(q.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+
+        const cleanedResult = {
+          roleMap: cleanedRoleMap,
+          stakeholderHypotheses: cleanedStakeholderHyps,
+          hiringSignals: cleanedHiringSignals,
+          milestoneSignals: cleanedMilestoneSignals,
+          outreachAngles: cleanedOutreachAngles,
+          discoveryQuestions: cleanedDiscoveryQuestions,
+        };
+
+        setPeopleRoleMap(cleanedRoleMap);
+        setPeopleStakeholderHyps(cleanedStakeholderHyps);
+        setPeopleHiringSignals(cleanedHiringSignals);
+        setPeopleMilestoneSignals(cleanedMilestoneSignals);
+        setPeopleOutreachAngles(cleanedOutreachAngles);
+        setPeopleDiscoveryQuestions(cleanedDiscoveryQuestions);
+        setPeopleSourceMode('recon');
+        setPublicPeopleNotes('Generated from existing recon data');
+        setPublicLeadershipText(`Recon-based: ${cleanedRoleMap.length} probable roles, ${cleanedStakeholderHyps.length} stakeholder hypotheses`);
+        if (company.reconFindings) {
+          updateCompany(company.id, {
+            reconFindings: {
+              ...company.reconFindings,
+              publicPeopleNotes: 'Generated from existing recon data',
+              publicLeadershipText: `Recon-based: ${cleanedRoleMap.length} probable roles, ${cleanedStakeholderHyps.length} stakeholder hypotheses`,
+              peopleSignals: cleanedResult,
+              scanDate: new Date().toISOString(),
+            },
+          });
+        }
+      } else {
+        setStakeholderGenMessage('❌ Not enough data to generate people signals from existing recon. Add more company profile info first.');
+        setTimeout(() => setStakeholderGenMessage(null), 4000);
+      }
+    } catch (err) {
+      console.error('Preliminary signal generation error:', err);
+    }
+    setReconGenerating(false);
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setManualPeopleText(text);
+        setClipboardStatus('✅ Pasted from clipboard');
+        setTimeout(() => setClipboardStatus(null), 3000);
+      } else {
+        setClipboardStatus('Clipboard is empty');
+        setTimeout(() => setClipboardStatus(null), 3000);
+      }
+    } catch {
+      setClipboardStatus('📋 Copy public LinkedIn/company/team/careers text, then paste it here manually.');
+      setTimeout(() => setClipboardStatus(null), 6000);
+    }
+  };
+
+  const handleUpdateSourceQueueStatus = (id: string, status: PeopleSourceQueueStatus, pastedText?: string) => {
+    setSourceQueue(prev => prev.map(item =>
+      item.id === id ? { ...item, status, ...(pastedText !== undefined ? { pastedText } : {}) } : item
+    ));
+  };
 
   const tabs: { key: Tab; label: string; icon: string }[] = [
     { key: 'discover', label: '1. Discover', icon: '🔗' },
@@ -329,6 +846,14 @@ export default function AutoFillReconPage() {
     { key: 'people', label: 'People', icon: '👤' },
     { key: 'apply', label: 'Apply', icon: '✅' },
   ];
+
+  const hasPeopleSignals =
+    peopleRoleMap.length > 0 ||
+    peopleStakeholderHyps.length > 0 ||
+    peopleHiringSignals.length > 0 ||
+    peopleMilestoneSignals.length > 0 ||
+    peopleOutreachAngles.length > 0 ||
+    peopleDiscoveryQuestions.length > 0;
 
   return (
     <div>
@@ -500,70 +1025,120 @@ export default function AutoFillReconPage() {
               </div>
             ) : (
               <>
-                <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
-                  {discoveredUrls.filter(u => u.status === 'unscanned').length} URLs ready to scan.
-                  URLs blocked by CORS can be pasted manually.
-                </p>
+                {discoveredUrls.length === 0 ? (
+                  /* ─── Fallback: Manual Homepage Paste ────── */
+                  <div style={{
+                    padding: 16, background: '#0f1525', borderRadius: 6,
+                    border: '1px solid #2a3a5c', marginBottom: 16,
+                  }}>
+                    <div style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
+                      📝 Manual Homepage Paste
+                    </div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+                      No URLs were discovered or state was lost. Paste your company homepage text below to analyze.
+                    </div>
+                    <div style={{ fontSize: 11, color: '#3b82f6', marginBottom: 8 }}>
+                      URL: {homepageUrl}
+                    </div>
+                    <textarea
+                      className="input"
+                      rows={4}
+                      placeholder="Paste public homepage text or HTML here..."
+                      style={{ fontSize: 12, marginBottom: 8 }}
+                      value={manualPasteText}
+                      onChange={e => setManualPasteText(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const text = manualPasteText.trim();
+                        if (!text) return;
+                        const newEntry: ReconDiscoveredUrl = {
+                          urlId: `url-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                          url: homepageUrl,
+                          pageType: 'Homepage',
+                          discoveryMethod: 'user-added',
+                          status: 'pasted',
+                          confidence: 'High' as ConfidenceLevel,
+                          notes: 'Manually pasted homepage text',
+                          fetchedText: text,
+                          fetchSourceType: 'pasted-public-page',
+                        };
+                        setDiscoveredUrls([newEntry]);
+                        setManualPasteText('');
+                      }}
+                    >
+                      Analyze Pasted Homepage
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
+                      {discoveredUrls.filter(u => u.status === 'unscanned').length} URLs ready to scan.
+                      URLs blocked by CORS can be pasted manually.
+                    </p>
 
-                <div style={{ maxHeight: 400, overflow: 'auto', marginBottom: 16 }}>
-                  {discoveredUrls.map(urlInfo => (
-                    <div key={urlInfo.urlId} style={{
-                      padding: '8px 12px', borderBottom: '1px solid rgba(42, 58, 92, 0.3)',
-                      fontSize: 12,
-                    }}>
-                      <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
-                        <div className="flex items-center" style={{ gap: 8 }}>
-                          <span style={{
-                            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                            background: urlInfo.status === 'scanned' ? '#10b981'
-                              : urlInfo.status === 'blocked' ? '#f59e0b'
-                              : urlInfo.status === 'failed' ? '#ef4444'
-                              : urlInfo.status === 'pasted' ? '#8b5cf6'
-                              : '#3b82f6',
-                          }} />
-                          <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{urlInfo.pageType}</span>
-                          <span className="truncate" style={{ color: '#64748b', maxWidth: 300 }}>{urlInfo.url}</span>
-                        </div>
-                        <span className={`badge ${
-                          urlInfo.status === 'scanned' ? 'badge-green' :
-                          urlInfo.status === 'blocked' ? 'badge-amber' :
-                          urlInfo.status === 'failed' ? 'badge-red' :
-                          urlInfo.status === 'pasted' ? 'badge-purple' :
-                          'badge-blue'
-                        }`} style={{ fontSize: 10 }}>
-                          {urlInfo.status}
-                        </span>
-                      </div>
-                      {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned') && (
-                        <div style={{ marginTop: 4 }}>
-                          {urlInfo.status === 'blocked' && (
-                            <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 4 }}>
-                              ⚠️ {urlInfo.notes || 'Blocked by CORS'}
+                    <div style={{ maxHeight: 400, overflow: 'auto', marginBottom: 16 }}>
+                      {discoveredUrls.map(urlInfo => (
+                        <div key={urlInfo.urlId} style={{
+                          padding: '8px 12px', borderBottom: '1px solid rgba(42, 58, 92, 0.3)',
+                          fontSize: 12,
+                        }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                            <div className="flex items-center" style={{ gap: 8 }}>
+                              <span style={{
+                                width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                                background: urlInfo.status === 'scanned' ? '#10b981'
+                                  : urlInfo.status === 'blocked' ? '#f59e0b'
+                                  : urlInfo.status === 'failed' ? '#ef4444'
+                                  : urlInfo.status === 'pasted' ? '#8b5cf6'
+                                  : '#3b82f6',
+                              }} />
+                              <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{urlInfo.pageType}</span>
+                              <span className="truncate" style={{ color: '#64748b', maxWidth: 300 }}>{urlInfo.url}</span>
+                            </div>
+                            <span className={`badge ${
+                              urlInfo.status === 'scanned' ? 'badge-green' :
+                              urlInfo.status === 'blocked' ? 'badge-amber' :
+                              urlInfo.status === 'failed' ? 'badge-red' :
+                              urlInfo.status === 'pasted' ? 'badge-purple' :
+                              'badge-blue'
+                            }`} style={{ fontSize: 10 }}>
+                              {urlInfo.status}
+                            </span>
+                          </div>
+                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned') && (
+                            <div style={{ marginTop: 4 }}>
+                              {urlInfo.status === 'blocked' && (
+                                <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 4 }}>
+                                  ⚠️ {urlInfo.notes || 'Blocked by CORS'}
+                                </div>
+                              )}
+                              <textarea
+                                className="input"
+                                placeholder="Paste page text or HTML here if fetch failed..."
+                                rows={2}
+                                style={{ fontSize: 11, minHeight: 40 }}
+                                onBlur={e => {
+                                  if (e.target.value.trim()) {
+                                    handlePasteUrlContent(urlInfo.urlId, e.target.value);
+                                  }
+                                }}
+                              />
                             </div>
                           )}
-                          <textarea
-                            className="input"
-                            placeholder="Paste page text or HTML here if fetch failed..."
-                            rows={2}
-                            style={{ fontSize: 11, minHeight: 40 }}
-                            onBlur={e => {
-                              if (e.target.value.trim()) {
-                                handlePasteUrlContent(urlInfo.urlId, e.target.value);
-                              }
-                            }}
-                          />
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
 
                 <div className="flex justify-between">
                   <button className="btn btn-secondary" onClick={() => setActiveTab('discover')}>
                     ← Back to Discover
                   </button>
                   <button className="btn btn-primary" onClick={handleFetchAndAnalyze}>
-                    {scanStatus === 'done' ? 'Re-scan' : 'Fetch & Analyze'}
+                    {scanStatus === 'done' ? 'Re-scan' : 'Analyze Public Sources'}
                   </button>
                 </div>
               </>
@@ -740,6 +1315,7 @@ export default function AutoFillReconPage() {
             <span className="input-label" style={{ margin: 0 }}>🎯 Auto-Discovered Openings ({openings.length})</span>
           </div>
           <div className="card-body">
+
             {openings.length === 0 ? (
               <EmptyState>
                 <EmptyStateIcon icon="🎯" />
@@ -798,62 +1374,459 @@ export default function AutoFillReconPage() {
       {activeTab === 'people' && (
         <div className="card">
           <div className="card-header">
-            <span className="input-label" style={{ margin: 0 }}>👤 Public People & Role Notes</span>
+            <span className="input-label" style={{ margin: 0 }}>👤 Public People & Role Signals</span>
+            {peopleRoleMap.length > 0 && <span className="badge badge-purple" style={{ fontSize: 10 }}>{peopleRoleMap.length} roles</span>}
           </div>
           <div className="card-body">
+
+            {/* Safety Notice */}
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)',
+              borderRadius: 6, padding: '8px 12px', marginBottom: 16, fontSize: 11, color: '#94a3b8'
+            }}>
+              🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
+            </div>
+
+
+            {/* People Source Discovery Section */}
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)',
+              borderRadius: 6, padding: '12px 14px', marginBottom: 16,
+            }}>
+              <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
+                🧭 Public People Source Discovery
+              </div>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>
+                Automatically discover public people/company sources from the company name and website. No scraping — sources open in your browser for manual review.
+              </div>
+              <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={handleDiscoverPeopleSources}
+                  disabled={sourceDiscovering}
+                >
+                  {sourceDiscovering ? 'Discovering...' : '🔍 Discover People Sources'}
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleGeneratePreliminarySignals}
+                  disabled={reconGenerating}
+                >
+                  {reconGenerating ? 'Generating...' : '📊 Generate People Signals from Existing Recon'}
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={handlePasteFromClipboard}>
+                  📋 Paste from Clipboard
+                </button>
+              </div>
+              {clipboardStatus && (
+                <div style={{ marginTop: 8, fontSize: 11, color: clipboardStatus.startsWith('✅') ? '#10b981' : '#f59e0b' }}>
+                  {clipboardStatus}
+                </div>
+              )}
+            </div>
+
+            {/* Source Queue */}
+            {sourceQueue.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8, fontWeight: 600 }}>
+                  📋 Public Source Queue ({sourceQueue.length})
+                </div>
+                <div style={{ display: 'grid', gap: 4, maxHeight: 300, overflow: 'auto' }}>
+                  {sourceQueue.map(item => {
+                    // Determine source type label
+                    const urlLower = item.sourceUrl.toLowerCase();
+                    const isHomepage = item.sourceUrl === item.sourceUrl.replace(/\/.*$/, '') || item.sourceUrl.endsWith(company?.basic.website || '');
+                    const isGuessedUrl = !isHomepage && (
+                      urlLower.includes('/team') || urlLower.includes('/about') ||
+                      urlLower.includes('/leadership') || urlLower.includes('/management') ||
+                      urlLower.includes('/careers') || urlLower.includes('/jobs') ||
+                      urlLower.includes('/news') || urlLower.includes('/press') ||
+                      urlLower.includes('/blog') || urlLower.includes('/contact')
+                    );
+                    const isGoogleSearch = urlLower.includes('google.com/search');
+                    const isLinkedInSearch = urlLower.includes('linkedin.com/search');
+                    const isLinkedInCandidate = urlLower.includes('linkedin.com/company/');
+                    const isCrunchbaseSearch = urlLower.includes('crunchbase');
+
+                    let sourceLabel = '';
+                    let labelColor = '';
+                    if (isHomepage) {
+                      sourceLabel = 'Confirmed base website';
+                      labelColor = '#10b981';
+                    } else if (isGuessedUrl) {
+                      sourceLabel = 'Guessed URL';
+                      labelColor = '#f59e0b';
+                    } else if (isLinkedInSearch) {
+                      sourceLabel = 'LinkedIn search';
+                      labelColor = '#3b82f6';
+                    } else if (isLinkedInCandidate) {
+                      sourceLabel = 'LinkedIn candidate URL';
+                      labelColor = '#8b5cf6';
+                    } else if (isGoogleSearch) {
+                      sourceLabel = 'Search link';
+                      labelColor = '#f59e0b';
+                    } else if (isCrunchbaseSearch) {
+                      sourceLabel = 'Search link';
+                      labelColor = '#f59e0b';
+                    } else if (item.confidence === 'High') {
+                      sourceLabel = 'Confirmed';
+                      labelColor = '#10b981';
+                    } else {
+                      sourceLabel = 'Guessed URL';
+                      labelColor = '#f59e0b';
+                    }
+
+                    return (
+                    <div key={item.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                      background: '#0f1525', borderRadius: 4, border: '1px solid #2a3a5c', fontSize: 11,
+                    }}>
+                      <span style={{
+                        width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                        background: item.status === 'analyzed' ? '#10b981'
+                          : item.status === 'pasted' ? '#8b5cf6'
+                          : item.status === 'opened' ? '#3b82f6'
+                          : item.status === 'skipped' ? '#64748b'
+                          : '#f59e0b',
+                      }} />
+                      <span className="badge" style={{
+                        background: 'rgba(59,130,246,0.1)', color: '#3b82f6',
+                        fontSize: 9, padding: '1px 5px', flexShrink: 0,
+                      }}>
+                        {item.status}
+                      </span>
+                      {sourceLabel && (
+                        <span style={{
+                          fontSize: 8, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+                          background: `${labelColor}20`, color: labelColor,
+                          border: `1px solid ${labelColor}40`,
+                        }}>
+                          {sourceLabel}
+                        </span>
+                      )}
+                      <span style={{ color: '#94a3b8', flexShrink: 0 }}>{item.sourceType.replace(/_/g, ' ')}</span>
+                      <span className="truncate" style={{ flex: 1, color: '#64748b', fontSize: 10 }}>{item.sourceUrl}</span>
+                      <span
+                        style={{ fontSize: 9, color: '#64748b', flexShrink: 0, cursor: 'pointer' }}
+                        title={item.reasonSuggested}
+                        onClick={() => {
+                          const existing = document.getElementById(`src-info-${item.id}`);
+                          if (existing) {
+                            existing.style.display = existing.style.display === 'none' ? 'block' : 'none';
+                          }
+                        }}
+                      >
+                        ℹ️
+                      </span>
+                      <button
+                        className="btn-icon btn-sm"
+                        style={{ fontSize: 10 }}
+                        onClick={() => window.open(item.sourceUrl, '_blank')}
+                        title="Open in new tab"
+                      >🔗</button>
+                      <button
+                        className="btn-icon btn-sm"
+                        style={{ fontSize: 10 }}
+                        onClick={() => handleUpdateSourceQueueStatus(item.id, 'skipped')}
+                        title="Skip"
+                      >✕</button>
+                      {item.status !== 'skipped' && item.status !== 'pasted' && item.status !== 'analyzed' && (
+                        <button
+                          className="btn-icon btn-sm"
+                          style={{ fontSize: 10 }}
+                          onClick={() => handleUpdateSourceQueueStatus(item.id, 'opened')}
+                          title="Mark opened"
+                        >👁️</button>
+                      )}
+                    </div>
+                  )})}
+                </div>
+              </div>
+            )}
+
+            <div className="flex" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: '0 0 200px' }}>
+                <label className="input-label" style={{ fontSize: 11 }}>Source Type</label>
+                <select
+                  className="input"
+                  value={peopleSourceType}
+                  onChange={e => setPeopleSourceType(e.target.value as PeopleSignalSourceType)}
+                  style={{ fontSize: 12 }}
+                >
+                  <option value="linkedin_company_about">LinkedIn Company About</option>
+                  <option value="linkedin_company_post">LinkedIn Public Company Post</option>
+                  <option value="linkedin_job_post">LinkedIn Public Job Post</option>
+                  <option value="company_team_page">Company Team Page</option>
+                  <option value="leadership_page">Leadership Page</option>
+                  <option value="press_release">Press Release</option>
+                  <option value="careers_page">Careers Page</option>
+                  <option value="manual_role_notes">Manual Role Notes</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="input-label" style={{ fontSize: 11 }}>Source URL</label>
+                <input
+                  className="input"
+                  value={peopleSourceUrl}
+                  onChange={e => setPeopleSourceUrl(e.target.value)}
+                  placeholder="https://www.linkedin.com/company/..."
+                  style={{ fontSize: 12 }}
+                />
+              </div>
+            </div>
+
+            {/* Public Text Textarea */}
             <div className="input-group">
-              <label className="input-label">Paste Public LinkedIn Company About / Jobs / Team Page Text</label>
-              <p style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
-                Paste public text from LinkedIn company pages, team pages, leadership pages, or press releases.
-                Do not paste private LinkedIn profile pages.
-              </p>
+              <label className="input-label">Paste Public People / Company Text</label>
               <textarea
                 className="input"
-                rows={6}
+                rows={5}
                 value={manualPeopleText}
                 onChange={e => setManualPeopleText(e.target.value)}
-                placeholder="Paste public company description, team page text, or leadership info here..."
+                placeholder="Paste publicly available text from LinkedIn company pages, team pages, leadership pages, press releases, careers pages, or your own manual role notes..."
+                style={{ fontSize: 12 }}
               />
             </div>
 
+            {/* Action Buttons */}
             {manualPeopleText && (
-              <div style={{ marginTop: 12 }}>
-                <button className="btn btn-primary btn-sm" onClick={() => {
-                  // Extract role hints from pasted text
-                  const roles = [
-                    'CEO', 'Founder', 'CTO', 'COO', 'CFO', 'CMO', 'VP',
-                    'Head of', 'Director', 'Manager', 'Lead',
-                  ];
-                  const foundRoles = roles.filter(r => manualPeopleText.includes(r));
-                  setPublicPeopleNotes(manualPeopleText.slice(0, 2000));
-                  setPublicLeadershipText(foundRoles.length > 0
-                    ? `Detected roles: ${foundRoles.join(', ')}. Extracted from pasted public text.`
-                    : 'No specific roles detected. Review text manually.');
-                }}>
-                  Analyze Pasted Text
+              <div className="flex" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleAnalyzePeopleText}
+                  disabled={peopleAnalyzing}
+                >
+                  {peopleAnalyzing ? 'Analyzing...' : '🔍 Analyze Public People Notes'}
+                </button>
+                <button className="btn btn-secondary" onClick={handleClearPeopleNotes}>
+                  🗑️ Clear People Notes
                 </button>
               </div>
             )}
 
-            {publicLeadershipText && (
-              <div style={{ marginTop: 12, padding: 10, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 12 }}>
-                <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                  <span style={{ color: '#e2e8f0', fontWeight: 600 }}>Leadership Analysis</span>
-                  <span className="badge badge-purple" style={{ fontSize: 10 }}>User Provided / Public Pasted</span>
+            {/* Analysis Results */}
+            {hasPeopleSignals && (
+              <div style={{ marginTop: 16, display: 'grid', gap: 16 }}>
+
+                {/* Role Map */}
+                <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                  <span className="input-label" style={{ fontSize: 12 }}>🗺️ Role Map ({peopleRoleMap.length})</span>
+                  <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                    {peopleRoleMap.map((r, i) => (
+                      <div key={i} style={{
+                        padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                        border: '1px solid #2a3a5c', fontSize: 11,
+                      }}>
+                        <div className="flex items-center justify-between">
+                          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{r.roleTitle}</span>
+                          <div className="flex" style={{ gap: 4 }}>
+                            <span className="badge badge-amber" style={{ fontSize: 9 }}>{r.department}</span>
+                            <span className={`badge ${r.confidence === 'High' ? 'badge-green' : r.confidence === 'Medium' ? 'badge-amber' : 'badge-red'}`} style={{ fontSize: 9 }}>{r.confidence}</span>
+                          </div>
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{r.evidence.slice(0, 120)}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div style={{ color: '#94a3b8', fontSize: 11 }}>{publicLeadershipText}</div>
-                {manualPeopleText && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
-                    <div>📝 Pasted text stored as public source ({manualPeopleText.length} chars)</div>
-                    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm" onClick={() => {
-                        navigator.clipboard.writeText(`Public People Notes\n${'='.repeat(40)}\n${publicLeadershipText}`);
-                      }}>📋 Copy</button>
+
+                {/* Stakeholder Hypotheses */}
+                {peopleStakeholderHyps.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>👥 Stakeholder Hypotheses ({peopleStakeholderHyps.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleStakeholderHyps.map((h, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h.roleTitle}</span>
+                            <span className={`badge ${h.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 9 }}>{h.confidence}</span>
+                          </div>
+                          <div style={{ color: '#94a3b8', marginTop: 2 }}>Concern: {h.likelyConcern}</div>
+                          <div style={{ color: '#3b82f6', marginTop: 2 }}>❓ {h.likelyDiscoveryQuestion}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Influence: {'⭐'.repeat(h.likelyBuyingInfluence)}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
+
+                {/* Hiring Signals */}
+                {peopleHiringSignals.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>📋 Hiring Signals ({peopleHiringSignals.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleHiringSignals.map((h, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{h.openRole || h.roleGap}</span>
+                            {h.department && <span className="badge badge-blue" style={{ fontSize: 9 }}>{h.department}</span>}
+                          </div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{h.evidence.slice(0, 120)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Milestone Signals */}
+                {peopleMilestoneSignals.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>🏆 Milestone Signals ({peopleMilestoneSignals.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleMilestoneSignals.map((m, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{m.description}</span>
+                            <span className="badge badge-amber" style={{ fontSize: 9 }}>{m.milestoneType}</span>
+                          </div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{m.evidence.slice(0, 120)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Outreach Angles */}
+                {peopleOutreachAngles.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>🎯 Outreach Angles ({peopleOutreachAngles.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleOutreachAngles.map((o, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div style={{ color: '#10b981' }}>{o.angleText}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Target: {o.targetRole} · Confidence: {o.confidence}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Discovery Questions */}
+                {peopleDiscoveryQuestions.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>❓ Discovery Questions ({peopleDiscoveryQuestions.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {peopleDiscoveryQuestions.map((q, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#3b82f6' }}>❓ {q.question}</span>
+                            <span className="badge badge-purple" style={{ fontSize: 9 }}>{q.targetRole}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Integration Buttons */}
+                <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                  {stakeholderGenMessage && (
+                    <div style={{
+                      padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 11,
+                      background: stakeholderGenMessage.startsWith('✅')
+                        ? 'rgba(16, 185, 129, 0.1)'
+                        : 'rgba(245, 158, 11, 0.1)',
+                      border: stakeholderGenMessage.startsWith('✅')
+                        ? '1px solid rgba(16, 185, 129, 0.3)'
+                        : '1px solid rgba(245, 158, 11, 0.3)',
+                      color: stakeholderGenMessage.startsWith('✅') ? '#10b981' : '#f59e0b',
+                    }}>
+                      {stakeholderGenMessage}
+                    </div>
+                  )}
+                  <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={handleGenerateStakeholdersFromPeople}
+                      disabled={peopleStakeholderHyps.length === 0 && !company.reconFindings?.peopleSignals?.stakeholderHypotheses?.length}
+                    >
+                      👥 Create Stakeholder Records from People Intelligence
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => handleCopyToClipboard('People Intelligence Brief', () => {
+                      const lines: string[] = [];
+                      lines.push(`Public People Intelligence for ${company.basic.name}`);
+                      lines.push('='.repeat(50));
+                      if (peopleRoleMap.length > 0) { lines.push(''); lines.push('ROLE MAP'); peopleRoleMap.forEach(r => lines.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`)); }
+                      if (peopleStakeholderHyps.length > 0) { lines.push(''); lines.push('STAKEHOLDER HYPOTHESES'); peopleStakeholderHyps.forEach(h => lines.push(`  ${h.roleTitle} — ${h.likelyConcern}`)); }
+                      if (peopleHiringSignals.length > 0) { lines.push(''); lines.push('HIRING SIGNALS'); peopleHiringSignals.forEach(h => lines.push(`  ${h.openRole} (${h.department})`)); }
+                      if (peopleMilestoneSignals.length > 0) { lines.push(''); lines.push('MILESTONE SIGNALS'); peopleMilestoneSignals.forEach(m => lines.push(`  ${m.description} [${m.milestoneType}]`)); }
+                      if (peopleOutreachAngles.length > 0) { lines.push(''); lines.push('OUTREACH ANGLES'); peopleOutreachAngles.forEach(o => lines.push(`  ${o.angleText}`)); }
+                      if (peopleDiscoveryQuestions.length > 0) { lines.push(''); lines.push('DISCOVERY QUESTIONS'); peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`)); }
+                      return lines.join('\n');
+                    })}>
+                      📋 Copy People Intelligence Brief
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
+                    Source: {peopleSourceMode === 'recon' ? 'Existing recon data' : peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || (peopleSourceMode === 'recon' ? 'Generated from company profile + recon data' : 'No URL provided')}
+                  </div>
+                </div>
+
+                {/* Generated Stakeholder Preview */}
+                {generatedStakeholders.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>✅ Generated Stakeholders ({generatedStakeholders.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {generatedStakeholders.map((s, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{s.role}</span>
+                            <div className="flex" style={{ gap: 4 }}>
+                              <span className="badge badge-amber" style={{ fontSize: 9 }}>{s.department}</span>
+                              <span className="badge" style={{
+                                fontSize: 9,
+                                background: s.category === 'economic_buyer' ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)',
+                                color: s.category === 'economic_buyer' ? '#10b981' : '#3b82f6',
+                              }}>{s.category === 'economic_buyer' ? 'Economic Buyer' : 'Influencer'}</span>
+                              <span className={`badge ${s.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 9 }}>{s.confidence}</span>
+                            </div>
+                          </div>
+                          <div style={{ color: '#94a3b8', marginTop: 2 }}>Priorities: {s.likelyPriorities}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Influence: {'⭐'.repeat(s.buyingInfluence)} · Source: People Intelligence</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
               </div>
             )}
+
+            {!hasPeopleSignals && manualPeopleText.length > 0 && !peopleAnalyzing && (
+              <div style={{
+                marginTop: 16, padding: 16, background: '#0f1525', borderRadius: 6,
+                border: '1px solid #2a3a5c', textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 12, color: '#64748b' }}>
+                  Click <strong>Analyze Public People Notes</strong> above to generate role signals, stakeholder hypotheses, hiring signals, milestone signals, outreach angles, and discovery questions from the pasted text.
+                </div>
+              </div>
+            )}
+
+            {peopleAnalyzing && (
+              <div style={{ textAlign: 'center', padding: 32, color: '#94a3b8', fontSize: 12 }}>
+                🧠 Analyzing public people text...
+              </div>
+            )}
+
           </div>
         </div>
       )}

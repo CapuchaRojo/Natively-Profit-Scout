@@ -1,26 +1,36 @@
 // ============================================================
-// Auto-Fill Recon Page — v0.3
+// Auto-Fill Recon Page — v0.4
 // Public web intelligence collector + auto-fill
+// Enhanced with ChatGPT JSON import, progress bar, toast notifications
 // ============================================================
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
+import { useToast, useCopyWithToast } from '../components/Toast';
+import { ReconProgressBar } from '../components/recon/ReconProgressBar';
+import { ChatGptJsonPaste } from '../components/recon/ChatGptJsonPaste';
+import { LinkedInSourceAssistant } from '../components/recon/LinkedInSourceAssistant';
 import {
   discoverPublicUrls, fetchPublicUrl,
   applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
 import { analyzePeopleText } from '../services/peopleSignalEngine';
-import { discoverPeopleSources, generatePreliminaryPeopleSignals } from '../services/publicSourceDiscovery';
+import {
+  discoverPeopleSources, generatePreliminaryPeopleSignals,
+  discoverLinkedInEmployees, discoverLinkedInPosts,
+  analyzeLinkedInPostText, extractEmployeesFromLinkedInText,
+} from '../services/publicSourceDiscovery';
 import type {
-  Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
+  Company, CompanyPeople, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
   ConfidenceLevel, PeopleSignalSourceType,
-  RoleMapEntry, StakeholderHypothesis, HiringSignal,
+  RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
   PeopleSourceQueueItem, PeopleSourceQueueStatus,
+  DiscoveredEmployee, LinkedInPostSignal,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
@@ -28,10 +38,12 @@ type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openi
 export default function AutoFillReconPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { showToast } = useToast();
+  const { copyToClipboard } = useCopyWithToast();
+
   const { state, getCompany, updateCompany } = useApp();
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
-
 const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [homepageUrl, setHomepageUrl] = useState(company?.basic.website || '');
   const [discoveredUrls, setDiscoveredUrls] = useState<ReconDiscoveredUrl[]>([]);
@@ -64,12 +76,10 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const [stakeholderGenMessage, setStakeholderGenMessage] = useState<string | null>(null);
   const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
-  useEffect(() => {
-    if (company?.basic.website) {
-      setHomepageUrl(company.basic.website);
-    }
-  }, [company?.id]);
 
+  const [generatedStakeholders, setGeneratedStakeholders] = useState<Stakeholder[]>([]);
+  const [showBriefPreview, setShowBriefPreview] = useState(false);
+  const [briefText, setBriefText] = useState('');
   // Restore recon state from company on mount
   useEffect(() => {
     if (company?.reconFindings) {
@@ -89,6 +99,12 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
           setPeopleMilestoneSignals(ps.milestoneSignals || []);
           setPeopleOutreachAngles(ps.outreachAngles || []);
           setPeopleDiscoveryQuestions(ps.discoveryQuestions || []);
+        }
+        // Restore people source mode from persisted note
+        if (rf.publicPeopleNotes === 'Generated from existing recon data') {
+          setPeopleSourceMode('recon');
+        } else if (rf.publicPeopleNotes && rf.publicPeopleNotes.length > 0) {
+          setPeopleSourceMode('manual');
         }
         if (rf.status === 'analyzed') { setScanStatus('done'); }
         if (rf.status === 'analyzed') { setActiveTab('fetch'); }
@@ -423,8 +439,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     });
   };
 
-  // ─── People Signal Handlers ───────────────────────────────────
+  // ─── LinkedIn Source Assistant Handler ─────────────────────
 
+  const handleLinkedInAutoFill = (peopleUpdates: Partial<CompanyPeople>) => {
+    updateCompany(company.id, {
+      people: { ...company.people, ...peopleUpdates },
+    });
+    showToast('✅ LinkedIn data applied to Company Profile', 'success');
+  };
+
+  // ─── People Signal Handlers ───────────────────────────────────
   const handleAnalyzePeopleText = () => {
     const text = manualPeopleText.trim();
     if (!text) return;
@@ -505,7 +529,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       });
     }
   };
-
   const handleGenerateStakeholdersFromPeople = () => {
     // Use current state or fallback to existing recon
     const hyps = peopleStakeholderHyps.length > 0
@@ -514,7 +537,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
     if (hyps.length === 0) {
       setStakeholderGenMessage('❌ No people stakeholder hypotheses available yet. Generate People Signals first.');
-      setTimeout(() => setStakeholderGenMessage(null), 4000);
+      setGeneratedStakeholders([]);
       return;
     }
 
@@ -528,7 +551,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       .map((h, i) => ({
         id: `stk-people-${Date.now()}-${i}`,
         category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
-        name: undefined,
+        name: undefined as string | undefined,
         role: h.roleTitle,
         department: h.department,
         likelyPriorities: h.likelyConcern,
@@ -543,7 +566,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
     if (newStakeholders.length === 0) {
       setStakeholderGenMessage('✅ Stakeholders already exist for these roles — no duplicates added.');
-      setTimeout(() => setStakeholderGenMessage(null), 4000);
+      setGeneratedStakeholders(company.stakeholders.filter(s =>
+        hyps.some(h => h.roleTitle === s.role && (h.likelyBuyingInfluence >= 4 ? 'economic_buyer' : 'influencer') === s.category)
+      ));
       return;
     }
 
@@ -562,43 +587,129 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       },
     });
 
-    setStakeholderGenMessage(`✅ Generated ${newStakeholders.length} stakeholder${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
-    setTimeout(() => setStakeholderGenMessage(null), 4000);
+    // Set preview stakeholders and success message
+    setGeneratedStakeholders(newStakeholders);
+    setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
   };
 
-  const handleCopyPeopleIntelligence = () => {
-    const lines: string[] = [];
-    lines.push(`Public People Intelligence for ${company.basic.name}`);
-    lines.push('='.repeat(50));
-    if (peopleRoleMap.length > 0) {
-      peopleRoleMap.forEach(r => lines.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`));
-      lines.push('');
+  // ─── CRM Brief & Copy Handler ────────────────────────────────
+
+  const generateCrmBriefText = (): string => {
+    const brief: string[] = [
+      `CRM-Ready Recon Brief: ${company.basic.name}`,
+      '='.repeat(50),
+      '',
+    ];
+
+    // People Intelligence section
+    if (hasPeopleSignals) {
+      brief.push('PEOPLE INTELLIGENCE');
+      if (peopleRoleMap.length > 0) {
+        brief.push('');
+        brief.push('Detected Roles:');
+        peopleRoleMap.forEach(r => brief.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`));
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('Stakeholder Hypotheses:');
+        peopleStakeholderHyps.forEach(h => brief.push(`  ${h.roleTitle} — ${h.likelyConcern}`));
+      }
+      if (peopleOutreachAngles.length > 0) {
+        brief.push('');
+        brief.push('Outreach Angles:');
+        peopleOutreachAngles.forEach(o => brief.push(`  ${o.angleText} (target: ${o.targetRole})`));
+      }
+      if (peopleDiscoveryQuestions.length > 0) {
+        brief.push('');
+        brief.push('Discovery Questions by Role:');
+        peopleDiscoveryQuestions.forEach(q => brief.push(`  [${q.targetRole}] ${q.question}`));
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('Suggested Stakeholder Records:');
+        peopleStakeholderHyps.forEach(h => {
+          const cat = h.likelyBuyingInfluence >= 4 ? 'Economic Buyer' : 'Influencer';
+          brief.push(`  ${h.roleTitle} — ${h.department} (${cat}, influence: ${h.likelyBuyingInfluence}/5)`);
+        });
+      }
+      if (peopleHiringSignals.length > 0) {
+        brief.push('');
+        brief.push('Hiring Signals:');
+        peopleHiringSignals.forEach(h => brief.push(`  ${h.openRole || h.roleGap} (${h.department})`));
+      }
+      if (peopleMilestoneSignals.length > 0) {
+        brief.push('');
+        brief.push('Milestone Signals:');
+        peopleMilestoneSignals.forEach(m => brief.push(`  ${m.description} [${m.milestoneType}]`));
+      }
+      brief.push('');
+      brief.push('Source: ' + (peopleSourceMode === 'recon'
+        ? 'Existing recon data'
+        : peopleSourceType.replace(/_/g, ' ') + (peopleSourceUrl ? ' — ' + peopleSourceUrl : '')));
+      brief.push('');
+      if (generatedStakeholders.length > 0) {
+        brief.push('GENERATED STAKEHOLDERS');
+        generatedStakeholders.forEach(s => {
+          brief.push(`  ${s.role} — ${s.department} (${s.category}, influence: ${s.buyingInfluence}/5, confidence: ${s.confidence})`);
+          brief.push(`    Priorities: ${s.likelyPriorities}`);
+          brief.push(`    Source: People Intelligence`);
+        });
+        brief.push('');
+      }
+      if (sourceQueue.length > 0) {
+        brief.push('Source Queue Summary:');
+        brief.push(`  ${sourceQueue.length} sources discovered`);
+        const byStatus: Record<string, number> = {};
+        sourceQueue.forEach(s => { byStatus[s.status] = (byStatus[s.status] || 0) + 1; });
+        Object.entries(byStatus).forEach(([k, v]) => brief.push(`    ${k}: ${v}`));
+        brief.push('');
+      }
     }
-    lines.push('STAKEHOLDER HYPOTHESES');
-    if (peopleStakeholderHyps.length > 0) {
-      peopleStakeholderHyps.forEach(h => lines.push(`  ${h.roleTitle} — ${h.likelyConcern}`));
-      lines.push('');
+
+    // Tools section
+    if (detectedTools.length > 0) {
+      brief.push('DETECTED TOOLS');
+      detectedTools.forEach(t => brief.push(`  ${t.toolName} — ${t.evidence}`));
+      brief.push('');
     }
-    lines.push('HIRING SIGNALS');
-    if (peopleHiringSignals.length > 0) {
-      peopleHiringSignals.forEach(h => lines.push(`  ${h.openRole} (${h.department})`));
-      lines.push('');
+
+    // Workflows section
+    if (inferredWorkflows.length > 0) {
+      brief.push('INFERRED WORKFLOWS');
+      inferredWorkflows.forEach(w => brief.push(`  ${w.workflowName}: ${w.discoveryQuestion}`));
+      brief.push('');
     }
-    lines.push('MILESTONE SIGNALS');
-    if (peopleMilestoneSignals.length > 0) {
-      peopleMilestoneSignals.forEach(m => lines.push(`  ${m.description} [${m.milestoneType}]`));
-      lines.push('');
+
+    // Openings section
+    if (openings.length > 0) {
+      brief.push('TOP OPENINGS');
+      openings.slice(0, 5).forEach(o => brief.push(`  ${o.title}\n    First Line: ${o.firstLine}\n    Discovery: ${o.discoveryQuestion}`));
+      brief.push('');
+      brief.push('SUGGESTED DEMO PROMPT');
+      const prompt = openings.find(o => o.suggestedBuildPrompt);
+      if (prompt) brief.push(`  ${prompt.suggestedBuildPrompt}`);
+      brief.push('');
     }
-    lines.push('OUTREACH ANGLES');
-    if (peopleOutreachAngles.length > 0) {
-      peopleOutreachAngles.forEach(o => lines.push(`  ${o.angleText}`));
-      lines.push('');
+
+    if (!hasPeopleSignals && detectedTools.length === 0 && inferredWorkflows.length === 0 && openings.length === 0) {
+      brief.push('No recon data available yet. Run URL discovery or generate People Signals first.');
+      brief.push('');
     }
-    lines.push('DISCOVERY QUESTIONS');
-    if (peopleDiscoveryQuestions.length > 0) {
-      peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`));
+
+    return brief.join('\n');
+  };
+
+  const handleCopyToClipboard = async (label: string, textBuilder: () => string) => {
+    try {
+      const text = textBuilder();
+      await copyToClipboard(text);
+      if (label === 'CRM-Ready Brief') {
+        setBriefText(text);
+        setShowBriefPreview(true);
+      }
+    } catch {
+      showToast(`❌ Copy failed — ${label}`, 'error');
     }
-    navigator.clipboard.writeText(lines.join('\n'));
   };
 
   // ─── People Source Discovery Handlers (v0.5) ──────────────────
@@ -735,7 +846,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       item.id === id ? { ...item, status, ...(pastedText !== undefined ? { pastedText } : {}) } : item
     ));
   };
-
   const tabs: { key: Tab; label: string; icon: string }[] = [
     { key: 'discover', label: '1. Discover', icon: '🔗' },
     { key: 'fetch', label: '2. Fetch', icon: '📡' },
@@ -755,6 +865,41 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     peopleOutreachAngles.length > 0 ||
     peopleDiscoveryQuestions.length > 0;
 
+  // Determine which steps are completed
+  const completedSteps: string[] = [];
+  if (discoveredUrls.length > 0) completedSteps.push('discover');
+  if (discoveredUrls.some(u => u.status === 'scanned' || u.status === 'pasted') || scanStatus === 'done') completedSteps.push('fetch');
+  if (detectedTools.length > 0 || inferredWorkflows.length > 0) completedSteps.push('analyze');
+  if (hasPeopleSignals) completedSteps.push('people');
+  if (company.reconFindings?.status === 'applied') completedSteps.push('apply');
+
+  // Map active tab to the progress step
+  const activeStep = activeTab === 'tools' || activeTab === 'workflows' || activeTab === 'suggestions' || activeTab === 'openings'
+    ? 'analyze' : activeTab;
+
+  const handleChatGptJsonParsed = (data: PeopleSignals) => {
+    setPeopleRoleMap(data.roleMap);
+    setPeopleStakeholderHyps(data.stakeholderHypotheses);
+    setPeopleHiringSignals(data.hiringSignals);
+    setPeopleMilestoneSignals(data.milestoneSignals);
+    setPeopleOutreachAngles(data.outreachAngles);
+    setPeopleDiscoveryQuestions(data.discoveryQuestions);
+    setPeopleSourceMode('manual');
+    setPublicPeopleNotes('Imported from ChatGPT JSON');
+    setPublicLeadershipText(`Imported from ChatGPT: ${data.roleMap.length} roles, ${data.stakeholderHypotheses.length} stakeholder hypotheses`);
+    if (company.reconFindings) {
+      updateCompany(company.id, {
+        reconFindings: {
+          ...company.reconFindings,
+          publicPeopleNotes: 'Imported from ChatGPT JSON',
+          publicLeadershipText: `Imported from ChatGPT: ${data.roleMap.length} roles, ${data.stakeholderHypotheses.length} stakeholder hypotheses`,
+          peopleSignals: data,
+          scanDate: new Date().toISOString(),
+        },
+      });
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -762,7 +907,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
         subtitle={`Public intelligence scanner for ${company.basic.name}`}
       />
 
-      {/* Safety Notice */}
+      {/* Recon Progress Bar */}
+      <ReconProgressBar
+        currentStep={activeStep}
+        completedSteps={completedSteps}
+        onStepClick={(step) => {
+          const tab = step === 'analyze' ? 'tools' : step;
+          setActiveTab(tab as Tab);
+        }}
+      />
+
       <div style={{
         background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)',
         borderRadius: 8, padding: '10px 16px', marginBottom: 20, fontSize: 12, color: '#94a3b8'
@@ -789,7 +943,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
           </div>
         ))}
       </div>
-
       {/* ─── TAB: DISCOVER ──────────────────────────────────── */}
       {activeTab === 'discover' && (
         <div className="card">
@@ -1287,6 +1440,14 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
             </div>
 
+            {/* LinkedIn Source Assistant Panel */}
+            <LinkedInSourceAssistant
+              companyName={company.basic.name}
+              onAutoFill={handleLinkedInAutoFill}
+            />
+
+            {/* ChatGPT JSON Import */}
+            <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
 
             {/* People Source Discovery Section */}
             <div style={{
@@ -1655,9 +1816,20 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       onClick={handleGenerateStakeholdersFromPeople}
                       disabled={peopleStakeholderHyps.length === 0 && !company.reconFindings?.peopleSignals?.stakeholderHypotheses?.length}
                     >
-                      👥 Generate Stakeholders from People Notes
+                      👥 Create Stakeholder Records from People Intelligence
                     </button>
-                    <button className="btn btn-secondary btn-sm" onClick={handleCopyPeopleIntelligence}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => handleCopyToClipboard('People Intelligence Brief', () => {
+                      const lines: string[] = [];
+                      lines.push(`Public People Intelligence for ${company.basic.name}`);
+                      lines.push('='.repeat(50));
+                      if (peopleRoleMap.length > 0) { lines.push(''); lines.push('ROLE MAP'); peopleRoleMap.forEach(r => lines.push(`  [${r.confidence}] ${r.roleTitle} (${r.department})`)); }
+                      if (peopleStakeholderHyps.length > 0) { lines.push(''); lines.push('STAKEHOLDER HYPOTHESES'); peopleStakeholderHyps.forEach(h => lines.push(`  ${h.roleTitle} — ${h.likelyConcern}`)); }
+                      if (peopleHiringSignals.length > 0) { lines.push(''); lines.push('HIRING SIGNALS'); peopleHiringSignals.forEach(h => lines.push(`  ${h.openRole} (${h.department})`)); }
+                      if (peopleMilestoneSignals.length > 0) { lines.push(''); lines.push('MILESTONE SIGNALS'); peopleMilestoneSignals.forEach(m => lines.push(`  ${m.description} [${m.milestoneType}]`)); }
+                      if (peopleOutreachAngles.length > 0) { lines.push(''); lines.push('OUTREACH ANGLES'); peopleOutreachAngles.forEach(o => lines.push(`  ${o.angleText}`)); }
+                      if (peopleDiscoveryQuestions.length > 0) { lines.push(''); lines.push('DISCOVERY QUESTIONS'); peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`)); }
+                      return lines.join('\n');
+                    })}>
                       📋 Copy People Intelligence Brief
                     </button>
                   </div>
@@ -1665,8 +1837,38 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                     Source: {peopleSourceMode === 'recon' ? 'Existing recon data' : peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || (peopleSourceMode === 'recon' ? 'Generated from company profile + recon data' : 'No URL provided')}
                   </div>
                 </div>
-              </div>
 
+                {/* Generated Stakeholder Preview */}
+                {generatedStakeholders.length > 0 && (
+                  <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                    <span className="input-label" style={{ fontSize: 12 }}>✅ Generated Stakeholders ({generatedStakeholders.length})</span>
+                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                      {generatedStakeholders.map((s, i) => (
+                        <div key={i} style={{
+                          padding: '6px 10px', background: '#0f1525', borderRadius: 4,
+                          border: '1px solid #2a3a5c', fontSize: 11,
+                        }}>
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{s.role}</span>
+                            <div className="flex" style={{ gap: 4 }}>
+                              <span className="badge badge-amber" style={{ fontSize: 9 }}>{s.department}</span>
+                              <span className="badge" style={{
+                                fontSize: 9,
+                                background: s.category === 'economic_buyer' ? 'rgba(16,185,129,0.15)' : 'rgba(59,130,246,0.15)',
+                                color: s.category === 'economic_buyer' ? '#10b981' : '#3b82f6',
+                              }}>{s.category === 'economic_buyer' ? 'Economic Buyer' : 'Influencer'}</span>
+                              <span className={`badge ${s.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 9 }}>{s.confidence}</span>
+                            </div>
+                          </div>
+                          <div style={{ color: '#94a3b8', marginTop: 2 }}>Priorities: {s.likelyPriorities}</div>
+                          <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Influence: {'⭐'.repeat(s.buyingInfluence)} · Source: People Intelligence</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+              </div>
             )}
 
             {!hasPeopleSignals && manualPeopleText.length > 0 && !peopleAnalyzing && (
@@ -1764,8 +1966,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 16 }}>
                 <div className="section-title" style={{ fontSize: 14 }}>📋 Copy Reports</div>
                 <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = [
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Recon Summary', () => {
+                    return [
                       `Public Recon Summary for ${company.basic.name}`,
                       `Scan Date: ${new Date().toISOString().slice(0, 10)}`,
                       '',
@@ -1781,51 +1983,27 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       'Inferred Workflows:',
                       ...inferredWorkflows.map(w => `  [${w.confidence}] ${w.workflowName} (${w.department})`),
                     ].join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  })}>
                     📋 Recon Summary
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = [
-                      `CRM-Ready Recon Brief: ${company.basic.name}`,
-                      '='.repeat(50),
-                      '',
-                      'Detected Tools:',
-                      ...detectedTools.map(t => `  ${t.toolName} — ${t.evidence}`),
-                      '',
-                      'Inferred Workflows:',
-                      ...inferredWorkflows.map(w => `  ${w.workflowName}: ${w.discoveryQuestion}`),
-                      '',
-                      'Top Openings:',
-                      ...openings.slice(0, 3).map(o => `  ${o.title}\n    First Line: ${o.firstLine}\n    Discovery: ${o.discoveryQuestion}`),
-                      '',
-                      'Suggested Demo Prompt:',
-                      ...openings.slice(0, 1).map(o => `  ${o.suggestedBuildPrompt}`),
-                    ].join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('CRM-Ready Brief', generateCrmBriefText)}>
                     📋 CRM-Ready Brief
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o =>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('First Outreach Lines', () => {
+                    return openings.map(o =>
                       `Opening: ${o.title}\nFirst Line: ${o.firstLine}\nDiscovery: ${o.discoveryQuestion}\n---`
                     ).join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  })}>
                     📋 First Outreach Lines
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o =>
-                      `Discovery: ${o.discoveryQuestion}`
-                    ).join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Discovery Questions', () => {
+                    return openings.map(o => `Discovery: ${o.discoveryQuestion}`).join('\n');
+                  })}>
                     📋 Discovery Questions
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o => o.suggestedBuildPrompt).filter(Boolean).join('\n---\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Native.Builder Prompts', () => {
+                    return openings.map(o => o.suggestedBuildPrompt).filter(Boolean).join('\n---\n');
+                  })}>
                     📋 Native.Builder Prompts
                   </button>
                 </div>

@@ -598,6 +598,9 @@ export type PeopleSignalSourceType =
   | 'linkedin_company_about'
   | 'linkedin_company_post'
   | 'linkedin_job_post'
+  | 'linkedin_employee_profile'
+  | 'linkedin_people_search'
+  | 'linkedin_company_posts_feed'
   | 'company_team_page'
   | 'leadership_page'
   | 'press_release'
@@ -702,4 +705,36 @@ export interface PeopleSourceQueueItem {
   status: PeopleSourceQueueStatus;
   pastedText?: string;
   confidence: ConfidenceLevel;
+}
+
+// ============================================================
+// LinkedIn Discovery Types (v0.6)
+// ============================================================
+
+export interface DiscoveredEmployee {
+  id: string;
+  name: string;
+  role?: string;
+  linkedInUrl?: string;
+  profileSearchUrl?: string;
+  department?: string;
+  source: 'linkedin_company_page' | 'linkedin_employee_profile' | 'manual_entry';
+  status: 'suggested' | 'opened' | 'analyzed' | 'skipped';
+  pastedText?: string;
+  roleMapEntries?: RoleMapEntry[];
+  confidence: ConfidenceLevel;
+}
+
+export interface LinkedInPostSignal {
+  id: string;
+  postUrl?: string;
+  authorName?: string;
+  authorRole?: string;
+  postType: 'company_post' | 'employee_post' | 'job_posting' | 'unknown';
+  keyThemes: string[];
+  hiringRelevance: string[];
+  painPointHints: string[];
+  opportunityHints: string[];
+  confidence: ConfidenceLevel;
+  pastedText?: string;
 }

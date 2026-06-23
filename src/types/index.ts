@@ -681,3 +681,25 @@ export interface PeopleSignals {
   outreachAngles: OutreachAngle[];
   discoveryQuestions: PeopleDiscoveryQuestion[];
 }
+
+// ============================================================
+// Public People Source Discovery Types (v0.5)
+// ============================================================
+
+export type PeopleSourceQueueStatus =
+  | 'suggested'
+  | 'opened'
+  | 'pasted'
+  | 'analyzed'
+  | 'skipped';
+
+export interface PeopleSourceQueueItem {
+  id: string;
+  sourceType: PeopleSignalSourceType;
+  sourceUrl: string;
+  searchUrl?: string;
+  reasonSuggested: string;
+  status: PeopleSourceQueueStatus;
+  pastedText?: string;
+  confidence: ConfidenceLevel;
+}

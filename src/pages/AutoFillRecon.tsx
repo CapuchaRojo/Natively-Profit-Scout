@@ -13,12 +13,14 @@ import {
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
 import { analyzePeopleText } from '../services/peopleSignalEngine';
+import { discoverPeopleSources, generatePreliminaryPeopleSignals } from '../services/publicSourceDiscovery';
 import type {
   Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
   ConfidenceLevel, PeopleSignalSourceType,
   RoleMapEntry, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
+  PeopleSourceQueueItem, PeopleSourceQueueStatus,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
@@ -30,19 +32,23 @@ export default function AutoFillReconPage() {
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
 
-  const [activeTab, setActiveTab] = useState<Tab>('discover');
+const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [homepageUrl, setHomepageUrl] = useState(company?.basic.website || '');
   const [discoveredUrls, setDiscoveredUrls] = useState<ReconDiscoveredUrl[]>([]);
   const [detectedTools, setDetectedTools] = useState<DetectedTool[]>([]);
   const [inferredWorkflows, setInferredWorkflows] = useState<InferredWorkflow[]>([]);
   const [suggestions, setSuggestions] = useState<ReconAutoFillSuggestion[]>([]);
   const [openings, setOpenings] = useState<ReconOpening[]>([]);
+  const [extraUrls, setExtraUrls] = useState('');
+  const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
+  const [scanError, setScanError] = useState('');
+  const [fetchProgress, setFetchProgress] = useState('');
+  const [manualPasteText, setManualPasteText] = useState('');
+
+  // People Signal Engine state
   const [manualPeopleText, setManualPeopleText] = useState('');
   const [publicPeopleNotes, setPublicPeopleNotes] = useState('');
   const [publicLeadershipText, setPublicLeadershipText] = useState('');
-  const [extraUrls, setExtraUrls] = useState('');
-  const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
-  // People Signal Engine state
   const [peopleSourceType, setPeopleSourceType] = useState<PeopleSignalSourceType>('linkedin_company_about');
   const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
   const [peopleRoleMap, setPeopleRoleMap] = useState<RoleMapEntry[]>([]);
@@ -52,9 +58,12 @@ export default function AutoFillReconPage() {
   const [peopleOutreachAngles, setPeopleOutreachAngles] = useState<OutreachAngle[]>([]);
   const [peopleDiscoveryQuestions, setPeopleDiscoveryQuestions] = useState<PeopleDiscoveryQuestion[]>([]);
   const [peopleAnalyzing, setPeopleAnalyzing] = useState(false);
-  const [scanError, setScanError] = useState('');
-  const [fetchProgress, setFetchProgress] = useState('');
-  const [manualPasteText, setManualPasteText] = useState('');
+  const [sourceQueue, setSourceQueue] = useState<PeopleSourceQueueItem[]>([]);
+  const [sourceDiscovering, setSourceDiscovering] = useState(false);
+  const [reconGenerating, setReconGenerating] = useState(false);
+  const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
+  const [stakeholderGenMessage, setStakeholderGenMessage] = useState<string | null>(null);
+  const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
   useEffect(() => {
     if (company?.basic.website) {
       setHomepageUrl(company.basic.website);
@@ -325,6 +334,32 @@ export default function AutoFillReconPage() {
   };
 
   const handleApplyAllToProfile = () => {
+    // ── People Intelligence: preserve from current state or existing record ──
+    const existingPeopleSignals = company.reconFindings?.peopleSignals;
+    const currentPeopleSignals: PeopleSignals = {
+      roleMap: peopleRoleMap,
+      stakeholderHypotheses: peopleStakeholderHyps,
+      hiringSignals: peopleHiringSignals,
+      milestoneSignals: peopleMilestoneSignals,
+      outreachAngles: peopleOutreachAngles,
+      discoveryQuestions: peopleDiscoveryQuestions,
+    };
+    const hasCurrentPeopleSignals =
+      peopleRoleMap.length > 0 ||
+      peopleStakeholderHyps.length > 0 ||
+      peopleHiringSignals.length > 0 ||
+      peopleMilestoneSignals.length > 0 ||
+      peopleOutreachAngles.length > 0 ||
+      peopleDiscoveryQuestions.length > 0;
+    const emptyPeopleSignals: PeopleSignals = {
+      roleMap: [],
+      stakeholderHypotheses: [],
+      hiringSignals: [],
+      milestoneSignals: [],
+      outreachAngles: [],
+      discoveryQuestions: [],
+    };
+
     const findings: ReconFindings = {
       companyId: company.id,
       discoveredUrls,
@@ -332,8 +367,11 @@ export default function AutoFillReconPage() {
       inferredWorkflows,
       autoFillSuggestions: suggestions,
       openings,
-      publicPeopleNotes,
-      publicLeadershipText,
+      peopleSignals: hasCurrentPeopleSignals
+        ? currentPeopleSignals
+        : existingPeopleSignals || emptyPeopleSignals,
+      publicPeopleNotes: publicPeopleNotes || company.reconFindings?.publicPeopleNotes || '',
+      publicLeadershipText: publicLeadershipText || company.reconFindings?.publicLeadershipText || '',
       scanDate: new Date().toISOString(),
       status: 'applied',
     };
@@ -400,6 +438,7 @@ export default function AutoFillReconPage() {
       setPeopleOutreachAngles(result.outreachAngles);
       setPeopleDiscoveryQuestions(result.discoveryQuestions);
       setPublicPeopleNotes(text.slice(0, 2000));
+      setPeopleSourceMode('manual');
       const roleTitles = result.roleMap.map(r => r.roleTitle).join(', ');
       setPublicLeadershipText(roleTitles
         ? `Detected roles: ${roleTitles}. ${result.roleMap.length} role signals identified from public source.`
@@ -446,6 +485,7 @@ export default function AutoFillReconPage() {
     setPeopleDiscoveryQuestions([]);
     setPublicPeopleNotes('');
     setPublicLeadershipText('');
+    setPeopleSourceMode('none');
     if (company.reconFindings) {
       updateCompany(company.id, {
         reconFindings: {
@@ -467,22 +507,46 @@ export default function AutoFillReconPage() {
   };
 
   const handleGenerateStakeholdersFromPeople = () => {
-    if (peopleStakeholderHyps.length === 0) return;
-    const newStakeholders = peopleStakeholderHyps.map((h, i) => ({
-      id: `stk-people-${Date.now()}-${i}`,
-      category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
-      name: undefined,
-      role: h.roleTitle,
-      department: h.department,
-      likelyPriorities: h.likelyConcern,
-      likelyObjections: 'Unknown — validate during discovery',
-      whatTheyCareAbout: h.likelyConcern,
-      bestTalkTrack: h.likelyDiscoveryQuestion,
-      bestProof: 'To be determined during discovery',
-      buyingInfluence: h.likelyBuyingInfluence,
-      accessStatus: 'unknown' as const,
-      confidence: h.confidence,
-    }));
+    // Use current state or fallback to existing recon
+    const hyps = peopleStakeholderHyps.length > 0
+      ? peopleStakeholderHyps
+      : (company.reconFindings?.peopleSignals?.stakeholderHypotheses || []);
+
+    if (hyps.length === 0) {
+      setStakeholderGenMessage('❌ No people stakeholder hypotheses available yet. Generate People Signals first.');
+      setTimeout(() => setStakeholderGenMessage(null), 4000);
+      return;
+    }
+
+    // Avoid duplicates: skip if same role+category already exists
+    const existingRoles = new Set(company.stakeholders.map(s => `${s.role}::${s.category}`));
+    const newStakeholders = hyps
+      .filter(h => {
+        const cat = h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const);
+        return !existingRoles.has(`${h.roleTitle}::${cat}`);
+      })
+      .map((h, i) => ({
+        id: `stk-people-${Date.now()}-${i}`,
+        category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
+        name: undefined,
+        role: h.roleTitle,
+        department: h.department,
+        likelyPriorities: h.likelyConcern,
+        likelyObjections: 'Unknown — validate during discovery',
+        whatTheyCareAbout: h.likelyConcern,
+        bestTalkTrack: h.likelyDiscoveryQuestion,
+        bestProof: 'To be determined during discovery',
+        buyingInfluence: h.likelyBuyingInfluence,
+        accessStatus: 'unknown' as const,
+        confidence: h.confidence,
+      }));
+
+    if (newStakeholders.length === 0) {
+      setStakeholderGenMessage('✅ Stakeholders already exist for these roles — no duplicates added.');
+      setTimeout(() => setStakeholderGenMessage(null), 4000);
+      return;
+    }
+
     updateCompany(company.id, {
       stakeholders: [...company.stakeholders, ...newStakeholders],
       reconFindings: {
@@ -497,6 +561,9 @@ export default function AutoFillReconPage() {
         },
       },
     });
+
+    setStakeholderGenMessage(`✅ Generated ${newStakeholders.length} stakeholder${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
+    setTimeout(() => setStakeholderGenMessage(null), 4000);
   };
 
   const handleCopyPeopleIntelligence = () => {
@@ -532,6 +599,141 @@ export default function AutoFillReconPage() {
       peopleDiscoveryQuestions.forEach(q => lines.push(`  [${q.targetRole}] ${q.question}`));
     }
     navigator.clipboard.writeText(lines.join('\n'));
+  };
+
+  // ─── People Source Discovery Handlers (v0.5) ──────────────────
+
+  const handleDiscoverPeopleSources = () => {
+    const companyName = company?.basic.name || '';
+    const website = company?.basic.website || homepageUrl;
+    if (!companyName && !website) return;
+    setSourceDiscovering(true);
+    try {
+      const sources = discoverPeopleSources(companyName, website);
+      setSourceQueue(sources);
+    } catch (err) {
+      console.error('Source discovery error:', err);
+    }
+    setSourceDiscovering(false);
+  };
+
+  const handleGeneratePreliminarySignals = () => {
+    if (!company) return;
+    setReconGenerating(true);
+    try {
+      const result = generatePreliminaryPeopleSignals(company, company.reconFindings);
+      if (result) {
+        // Clean up recon-derived evidence strings
+        const cleanReconEvidence = (evidence: string): string => {
+          const cleaned = evidence
+            .replace(/Generated from existing recon data/gi, '')
+            .replace(/Recon-based:.*?(?:roles?|stakeholder|signals?|suggestions?)[,.]*/gi, '')
+            .replace(/\.\.\./g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!cleaned || cleaned.length < 5) {
+            return 'Existing recon data suggests this role/department is present.';
+          }
+          return `Existing recon mentions ${cleaned}.`;
+        };
+
+        const cleanedRoleMap = result.roleMap.map(r => ({
+          ...r,
+          evidence: cleanReconEvidence(r.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedStakeholderHyps = result.stakeholderHypotheses.map(h => ({
+          ...h,
+          evidence: cleanReconEvidence(h.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedHiringSignals = result.hiringSignals.map(h => ({
+          ...h,
+          evidence: cleanReconEvidence(h.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedMilestoneSignals = result.milestoneSignals.map(m => ({
+          ...m,
+          evidence: cleanReconEvidence(m.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedOutreachAngles = result.outreachAngles.map(o => ({
+          ...o,
+          evidence: cleanReconEvidence(o.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+        const cleanedDiscoveryQuestions = result.discoveryQuestions.map(q => ({
+          ...q,
+          evidence: cleanReconEvidence(q.evidence),
+          sourceType: 'manual_role_notes' as const,
+          sourceUrl: 'Existing recon data',
+        }));
+
+        const cleanedResult = {
+          roleMap: cleanedRoleMap,
+          stakeholderHypotheses: cleanedStakeholderHyps,
+          hiringSignals: cleanedHiringSignals,
+          milestoneSignals: cleanedMilestoneSignals,
+          outreachAngles: cleanedOutreachAngles,
+          discoveryQuestions: cleanedDiscoveryQuestions,
+        };
+
+        setPeopleRoleMap(cleanedRoleMap);
+        setPeopleStakeholderHyps(cleanedStakeholderHyps);
+        setPeopleHiringSignals(cleanedHiringSignals);
+        setPeopleMilestoneSignals(cleanedMilestoneSignals);
+        setPeopleOutreachAngles(cleanedOutreachAngles);
+        setPeopleDiscoveryQuestions(cleanedDiscoveryQuestions);
+        setPeopleSourceMode('recon');
+        setPublicPeopleNotes('Generated from existing recon data');
+        setPublicLeadershipText(`Recon-based: ${cleanedRoleMap.length} probable roles, ${cleanedStakeholderHyps.length} stakeholder hypotheses`);
+        if (company.reconFindings) {
+          updateCompany(company.id, {
+            reconFindings: {
+              ...company.reconFindings,
+              publicPeopleNotes: 'Generated from existing recon data',
+              publicLeadershipText: `Recon-based: ${cleanedRoleMap.length} probable roles, ${cleanedStakeholderHyps.length} stakeholder hypotheses`,
+              peopleSignals: cleanedResult,
+              scanDate: new Date().toISOString(),
+            },
+          });
+        }
+      } else {
+        setStakeholderGenMessage('❌ Not enough data to generate people signals from existing recon. Add more company profile info first.');
+        setTimeout(() => setStakeholderGenMessage(null), 4000);
+      }
+    } catch (err) {
+      console.error('Preliminary signal generation error:', err);
+    }
+    setReconGenerating(false);
+  };
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setManualPeopleText(text);
+        setClipboardStatus('✅ Pasted from clipboard');
+        setTimeout(() => setClipboardStatus(null), 3000);
+      } else {
+        setClipboardStatus('Clipboard is empty');
+        setTimeout(() => setClipboardStatus(null), 3000);
+      }
+    } catch {
+      setClipboardStatus('📋 Copy public LinkedIn/company/team/careers text, then paste it here manually.');
+      setTimeout(() => setClipboardStatus(null), 6000);
+    }
+  };
+
+  const handleUpdateSourceQueueStatus = (id: string, status: PeopleSourceQueueStatus, pastedText?: string) => {
+    setSourceQueue(prev => prev.map(item =>
+      item.id === id ? { ...item, status, ...(pastedText !== undefined ? { pastedText } : {}) } : item
+    ));
   };
 
   const tabs: { key: Tab; label: string; icon: string }[] = [
@@ -1013,6 +1215,7 @@ export default function AutoFillReconPage() {
             <span className="input-label" style={{ margin: 0 }}>🎯 Auto-Discovered Openings ({openings.length})</span>
           </div>
           <div className="card-body">
+
             {openings.length === 0 ? (
               <EmptyState>
                 <EmptyStateIcon icon="🎯" />
@@ -1084,7 +1287,163 @@ export default function AutoFillReconPage() {
               🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
             </div>
 
-            {/* Source Type & URL */}
+
+            {/* People Source Discovery Section */}
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)',
+              borderRadius: 6, padding: '12px 14px', marginBottom: 16,
+            }}>
+              <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
+                🧭 Public People Source Discovery
+              </div>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>
+                Automatically discover public people/company sources from the company name and website. No scraping — sources open in your browser for manual review.
+              </div>
+              <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={handleDiscoverPeopleSources}
+                  disabled={sourceDiscovering}
+                >
+                  {sourceDiscovering ? 'Discovering...' : '🔍 Discover People Sources'}
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleGeneratePreliminarySignals}
+                  disabled={reconGenerating}
+                >
+                  {reconGenerating ? 'Generating...' : '📊 Generate People Signals from Existing Recon'}
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={handlePasteFromClipboard}>
+                  📋 Paste from Clipboard
+                </button>
+              </div>
+              {clipboardStatus && (
+                <div style={{ marginTop: 8, fontSize: 11, color: clipboardStatus.startsWith('✅') ? '#10b981' : '#f59e0b' }}>
+                  {clipboardStatus}
+                </div>
+              )}
+            </div>
+
+            {/* Source Queue */}
+            {sourceQueue.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8, fontWeight: 600 }}>
+                  📋 Public Source Queue ({sourceQueue.length})
+                </div>
+                <div style={{ display: 'grid', gap: 4, maxHeight: 300, overflow: 'auto' }}>
+                  {sourceQueue.map(item => {
+                    // Determine source type label
+                    const urlLower = item.sourceUrl.toLowerCase();
+                    const isHomepage = item.sourceUrl === item.sourceUrl.replace(/\/.*$/, '') || item.sourceUrl.endsWith(company?.basic.website || '');
+                    const isGuessedUrl = !isHomepage && (
+                      urlLower.includes('/team') || urlLower.includes('/about') ||
+                      urlLower.includes('/leadership') || urlLower.includes('/management') ||
+                      urlLower.includes('/careers') || urlLower.includes('/jobs') ||
+                      urlLower.includes('/news') || urlLower.includes('/press') ||
+                      urlLower.includes('/blog') || urlLower.includes('/contact')
+                    );
+                    const isGoogleSearch = urlLower.includes('google.com/search');
+                    const isLinkedInSearch = urlLower.includes('linkedin.com/search');
+                    const isLinkedInCandidate = urlLower.includes('linkedin.com/company/');
+                    const isCrunchbaseSearch = urlLower.includes('crunchbase');
+
+                    let sourceLabel = '';
+                    let labelColor = '';
+                    if (isHomepage) {
+                      sourceLabel = 'Confirmed base website';
+                      labelColor = '#10b981';
+                    } else if (isGuessedUrl) {
+                      sourceLabel = 'Guessed URL';
+                      labelColor = '#f59e0b';
+                    } else if (isLinkedInSearch) {
+                      sourceLabel = 'LinkedIn search';
+                      labelColor = '#3b82f6';
+                    } else if (isLinkedInCandidate) {
+                      sourceLabel = 'LinkedIn candidate URL';
+                      labelColor = '#8b5cf6';
+                    } else if (isGoogleSearch) {
+                      sourceLabel = 'Search link';
+                      labelColor = '#f59e0b';
+                    } else if (isCrunchbaseSearch) {
+                      sourceLabel = 'Search link';
+                      labelColor = '#f59e0b';
+                    } else if (item.confidence === 'High') {
+                      sourceLabel = 'Confirmed';
+                      labelColor = '#10b981';
+                    } else {
+                      sourceLabel = 'Guessed URL';
+                      labelColor = '#f59e0b';
+                    }
+
+                    return (
+                    <div key={item.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                      background: '#0f1525', borderRadius: 4, border: '1px solid #2a3a5c', fontSize: 11,
+                    }}>
+                      <span style={{
+                        width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                        background: item.status === 'analyzed' ? '#10b981'
+                          : item.status === 'pasted' ? '#8b5cf6'
+                          : item.status === 'opened' ? '#3b82f6'
+                          : item.status === 'skipped' ? '#64748b'
+                          : '#f59e0b',
+                      }} />
+                      <span className="badge" style={{
+                        background: 'rgba(59,130,246,0.1)', color: '#3b82f6',
+                        fontSize: 9, padding: '1px 5px', flexShrink: 0,
+                      }}>
+                        {item.status}
+                      </span>
+                      {sourceLabel && (
+                        <span style={{
+                          fontSize: 8, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+                          background: `${labelColor}20`, color: labelColor,
+                          border: `1px solid ${labelColor}40`,
+                        }}>
+                          {sourceLabel}
+                        </span>
+                      )}
+                      <span style={{ color: '#94a3b8', flexShrink: 0 }}>{item.sourceType.replace(/_/g, ' ')}</span>
+                      <span className="truncate" style={{ flex: 1, color: '#64748b', fontSize: 10 }}>{item.sourceUrl}</span>
+                      <span
+                        style={{ fontSize: 9, color: '#64748b', flexShrink: 0, cursor: 'pointer' }}
+                        title={item.reasonSuggested}
+                        onClick={() => {
+                          const existing = document.getElementById(`src-info-${item.id}`);
+                          if (existing) {
+                            existing.style.display = existing.style.display === 'none' ? 'block' : 'none';
+                          }
+                        }}
+                      >
+                        ℹ️
+                      </span>
+                      <button
+                        className="btn-icon btn-sm"
+                        style={{ fontSize: 10 }}
+                        onClick={() => window.open(item.sourceUrl, '_blank')}
+                        title="Open in new tab"
+                      >🔗</button>
+                      <button
+                        className="btn-icon btn-sm"
+                        style={{ fontSize: 10 }}
+                        onClick={() => handleUpdateSourceQueueStatus(item.id, 'skipped')}
+                        title="Skip"
+                      >✕</button>
+                      {item.status !== 'skipped' && item.status !== 'pasted' && item.status !== 'analyzed' && (
+                        <button
+                          className="btn-icon btn-sm"
+                          style={{ fontSize: 10 }}
+                          onClick={() => handleUpdateSourceQueueStatus(item.id, 'opened')}
+                          title="Mark opened"
+                        >👁️</button>
+                      )}
+                    </div>
+                  )})}
+                </div>
+              </div>
+            )}
+
             <div className="flex" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: '0 0 200px' }}>
                 <label className="input-label" style={{ fontSize: 11 }}>Source Type</label>
@@ -1276,11 +1635,25 @@ export default function AutoFillReconPage() {
 
                 {/* Integration Buttons */}
                 <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 12 }}>
+                  {stakeholderGenMessage && (
+                    <div style={{
+                      padding: '8px 12px', borderRadius: 6, marginBottom: 12, fontSize: 11,
+                      background: stakeholderGenMessage.startsWith('✅')
+                        ? 'rgba(16, 185, 129, 0.1)'
+                        : 'rgba(245, 158, 11, 0.1)',
+                      border: stakeholderGenMessage.startsWith('✅')
+                        ? '1px solid rgba(16, 185, 129, 0.3)'
+                        : '1px solid rgba(245, 158, 11, 0.3)',
+                      color: stakeholderGenMessage.startsWith('✅') ? '#10b981' : '#f59e0b',
+                    }}>
+                      {stakeholderGenMessage}
+                    </div>
+                  )}
                   <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
                     <button
                       className="btn btn-primary btn-sm"
                       onClick={handleGenerateStakeholdersFromPeople}
-                      disabled={peopleStakeholderHyps.length === 0}
+                      disabled={peopleStakeholderHyps.length === 0 && !company.reconFindings?.peopleSignals?.stakeholderHypotheses?.length}
                     >
                       👥 Generate Stakeholders from People Notes
                     </button>
@@ -1289,11 +1662,10 @@ export default function AutoFillReconPage() {
                     </button>
                   </div>
                   <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
-                    Source: {peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || 'No URL provided'}
+                    Source: {peopleSourceMode === 'recon' ? 'Existing recon data' : peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || (peopleSourceMode === 'recon' ? 'Generated from company profile + recon data' : 'No URL provided')}
                   </div>
-            </div>
-
-            </div>
+                </div>
+              </div>
 
             )}
 

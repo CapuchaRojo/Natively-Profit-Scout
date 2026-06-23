@@ -4,7 +4,7 @@
 // company name and website. No scraping, no logins, no auth bypass.
 // ============================================================
 
-import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company } from '../types';
+import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
 import { analyzePeopleText } from './peopleSignalEngine';
 
 // ─── ID Generator ─────────────────────────────────────────────
@@ -136,6 +136,290 @@ export function discoverPeopleSources(
   }
 
   return sources;
+}
+
+
+export function discoverLinkedInEmployees(
+  companyName: string,
+  website: string
+): DiscoveredEmployee[] {
+  const employees: DiscoveredEmployee[] = [];
+  const slug = inferLinkedInSlug(companyName);
+
+  // LinkedIn people search — find employees
+  const peopleSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${companyName}`)}&origin=GLOBAL_SEARCH_HEADER`;
+  employees.push({
+    id: uid('emp'),
+    name: `Employees of ${companyName}`,
+    role: 'All employees (LinkedIn people search)',
+    profileSearchUrl: peopleSearchUrl,
+    department: 'Multiple',
+    source: 'linkedin_employee_profile',
+    status: 'suggested',
+    confidence: 'Medium',
+  });
+
+  // Try to find specific roles via LinkedIn search
+  const roleSearches: { role: string; department: string }[] = [
+    { role: 'CEO', department: 'Executive' },
+    { role: 'CTO', department: 'Technology & Product' },
+    { role: 'Sales', department: 'Sales & Marketing' },
+    { role: 'Marketing', department: 'Sales & Marketing' },
+    { role: 'Operations', department: 'Operations' },
+    { role: 'Support', department: 'Customer Support' },
+    { role: 'Engineering', department: 'Technology & Product' },
+    { role: 'Product', department: 'Technology & Product' },
+    { role: 'HR', department: 'HR & Talent' },
+    { role: 'Finance', department: 'Finance & Administration' },
+  ];
+
+  for (const rs of roleSearches) {
+    const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${companyName} ${rs.role}`)}&origin=GLOBAL_SEARCH_HEADER`;
+    employees.push({
+      id: uid('emp'),
+      name: `${rs.role} at ${companyName}`,
+      role: rs.role,
+      profileSearchUrl: searchUrl,
+      department: rs.department,
+      source: 'linkedin_employee_profile',
+      status: 'suggested',
+      confidence: 'Low',
+    });
+  }
+
+  // Direct LinkedIn company page
+  const directLinkedInUrl = `https://www.linkedin.com/company/${slug}`;
+  employees.push({
+    id: uid('emp'),
+    name: `LinkedIn Company Page: ${companyName}`,
+    role: 'Company page (inferred slug)',
+    linkedInUrl: directLinkedInUrl,
+    profileSearchUrl: directLinkedInUrl,
+    department: 'Multiple',
+    source: 'linkedin_company_page',
+    status: 'suggested',
+    confidence: 'Medium',
+  });
+
+  return employees;
+}
+
+// ─── Generate LinkedIn Post Feed URLs ────────────────────────────
+
+export function discoverLinkedInPosts(
+  companyName: string
+): PeopleSourceQueueItem[] {
+  const posts: PeopleSourceQueueItem[] = [];
+  const slug = inferLinkedInSlug(companyName);
+
+  // Direct company LinkedIn posts feed
+  const companyPostsUrl = `https://www.linkedin.com/company/${slug}/posts/`;
+  posts.push({
+    id: uid('lpp'),
+    sourceType: 'linkedin_company_posts_feed',
+    sourceUrl: companyPostsUrl,
+    reasonSuggested: 'Company LinkedIn posts feed — open in new tab, review recent posts, paste relevant post text',
+    status: 'suggested',
+    confidence: 'Low',
+  });
+
+  // LinkedIn search for posts mentioning the company
+  const postSearchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(companyName)}&origin=GLOBAL_SEARCH_HEADER&sid=m%2Cg`;
+  posts.push({
+    id: uid('lpp'),
+    sourceType: 'linkedin_company_post',
+    sourceUrl: postSearchUrl,
+    reasonSuggested: 'LinkedIn content search — posts mentioning the company',
+    status: 'suggested',
+    confidence: 'Medium',
+  });
+
+  // LinkedIn job posts
+  const jobsUrl = `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(companyName)}`;
+  posts.push({
+    id: uid('lpp'),
+    sourceType: 'linkedin_job_post',
+    sourceUrl: jobsUrl,
+    reasonSuggested: 'LinkedIn job search — open roles at the company',
+    status: 'suggested',
+    confidence: 'Medium',
+  });
+
+  return posts;
+}
+
+// ─── Analyze pasted LinkedIn post text ───────────────────────────
+
+export function analyzeLinkedInPostText(
+  text: string,
+  companyName: string
+): LinkedInPostSignal {
+  const lower = text.toLowerCase();
+  const themes: string[] = [];
+  const hiringRelevance: string[] = [];
+  const painHints: string[] = [];
+  const oppHints: string[] = [];
+
+  // Detect themes
+  if (lower.includes('launch') || lower.includes('new product') || lower.includes('introducing')) {
+    themes.push('Product/feature launch');
+  }
+  if (lower.includes('partner') || lower.includes('alliance') || lower.includes('collaboration')) {
+    themes.push('Partnership/collaboration');
+  }
+  if (lower.includes('hiring') || lower.includes('join our team') || lower.includes('we are looking')) {
+    themes.push('Hiring/recruiting');
+    hiringRelevance.push('Active hiring — likely growing team');
+  }
+  if (lower.includes('customer') || lower.includes('client') || lower.includes('case study')) {
+    themes.push('Customer success/testimonial');
+  }
+  if (lower.includes('award') || lower.includes('recognized') || lower.includes('ranked')) {
+    themes.push('Award/recognition');
+  }
+  if (lower.includes('funding') || lower.includes('investment') || lower.includes('raised')) {
+    themes.push('Funding/investment');
+  }
+  if (lower.includes('growing') || lower.includes('expansion') || lower.includes('new office')) {
+    themes.push('Growth/expansion');
+    hiringRelevance.push('Expanding operations — potential workflow pain');
+  }
+  if (lower.includes('automation') || lower.includes('workflow') || lower.includes('efficiency')) {
+    themes.push('Automation/efficiency focus');
+    oppHints.push('Already thinking about automation — warm opportunity');
+  }
+  if (lower.includes('pain') || lower.includes('challenge') || lower.includes('difficult') || lower.includes('struggle')) {
+    themes.push('Pain/challenge acknowledgment');
+    painHints.push('Openly acknowledges challenges — good discovery entry point');
+  }
+  if (lower.includes('excited') || lower.includes('announce') || lower.includes('celebrate')) {
+    themes.push('Milestone/celebration');
+  }
+  if (lower.includes('security') || lower.includes('compliance') || lower.includes('risk')) {
+    themes.push('Security/compliance focus');
+    oppHints.push('Security/compliance concerns — potential pain point');
+  }
+  if (lower.includes('ai') || lower.includes('artificial intelligence') || lower.includes('machine learning')) {
+    themes.push('AI/adoption');
+    oppHints.push('Exploring AI — receptive to automation solutions');
+  }
+
+  // Auto-detect post type
+  let postType: LinkedInPostSignal['postType'] = 'unknown';
+  if (lower.includes('hiring') || lower.includes('job') || lower.includes('career') || lower.includes('open position')) {
+    postType = 'job_posting';
+  } else if (lower.includes('we are') || lower.includes('our company') || lower.includes('we just')) {
+    postType = 'company_post';
+  } else if (lower.includes('proud') || lower.includes('excited to share') || lower.includes('my team')) {
+    postType = 'employee_post';
+  }
+
+  // Detect author role cues
+  let authorRole: string | undefined;
+  const rolePatterns = [
+    { keywords: ['founder', 'ceo', 'chief'], role: 'Founder/CEO' },
+    { keywords: ['sales', 'revenue', 'account executive'], role: 'Sales' },
+    { keywords: ['engineer', 'developer', 'cto', 'technical'], role: 'Technical' },
+    { keywords: ['marketing', 'content', 'brand'], role: 'Marketing' },
+    { keywords: ['support', 'customer success'], role: 'Customer Success' },
+    { keywords: ['product', 'product manager'], role: 'Product' },
+  ];
+  for (const rp of rolePatterns) {
+    if (rp.keywords.some(k => lower.includes(k))) {
+      authorRole = rp.role;
+      break;
+    }
+  }
+
+  // Detect author name (simple heuristic)
+  let authorName: string | undefined;
+  const nameMatch = text.match(/^(\w+\s+\w+)\s*[|\-–—]/m);
+  if (nameMatch) {
+    authorName = nameMatch[1].trim();
+  }
+
+  if (themes.length === 0) {
+    themes.push('General company update');
+  }
+
+  return {
+    id: uid('lps'),
+    authorName,
+    authorRole,
+    postType,
+    keyThemes: themes,
+    hiringRelevance,
+    painPointHints: painHints,
+    opportunityHints: oppHints,
+    confidence: 'Medium',
+    pastedText: text.slice(0, 3000),
+  };
+}
+
+// ─── Extract employee names from pasted LinkedIn company text ────
+
+export function extractEmployeesFromLinkedInText(
+  text: string,
+  companyName: string
+): DiscoveredEmployee[] {
+  const employees: DiscoveredEmployee[] = [];
+  const lines = text.split('\n');
+  const seen = new Set<string>();
+
+  // Look for patterns like "Name — Role" or "Name | Role" or "Name, Role"
+  const nameRolePattern = /([A-Z][a-z]+\s+[A-Z][a-z]+)\s*[|\-–—,]+\s*([A-Za-z][A-Za-z\s\/]+)/g;
+  let match;
+  while ((match = nameRolePattern.exec(text)) !== null) {
+    const name = match[1].trim();
+    const role = match[2].trim();
+    if (!seen.has(name) && name.length > 3) {
+      seen.add(name);
+      employees.push({
+        id: uid('emp'),
+        name,
+        role,
+        department: inferDepartmentFromRole(role),
+        source: 'linkedin_employee_profile',
+        status: 'suggested',
+        confidence: 'Medium',
+      });
+    }
+  }
+
+  // Look for bullet-pointed names (common on LinkedIn)
+  const bulletPattern = /[•\-]\s*([A-Z][a-z]+\s+[A-Z][a-z]+)/g;
+  while ((match = bulletPattern.exec(text)) !== null) {
+    const name = match[1].trim();
+    if (!seen.has(name) && name.length > 3) {
+      seen.add(name);
+      employees.push({
+        id: uid('emp'),
+        name,
+        source: 'linkedin_employee_profile',
+        status: 'suggested',
+        confidence: 'Low',
+      });
+    }
+  }
+
+  return employees;
+}
+
+// ─── Infer department from role title ────────────────────────────
+
+function inferDepartmentFromRole(role: string): string {
+  const lower = role.toLowerCase();
+  if (lower.includes('ceo') || lower.includes('founder') || lower.includes('president') || lower.includes('chief')) return 'Executive';
+  if (lower.includes('sales') || lower.includes('revenue') || lower.includes('account') || lower.includes('bdr') || lower.includes('gtm')) return 'Sales & Marketing';
+  if (lower.includes('market') || lower.includes('brand') || lower.includes('content') || lower.includes('pr') || lower.includes('social')) return 'Sales & Marketing';
+  if (lower.includes('engineer') || lower.includes('developer') || lower.includes('cto') || lower.includes('technical') || lower.includes('product')) return 'Technology & Product';
+  if (lower.includes('support') || lower.includes('customer success') || lower.includes('service') || lower.includes('help')) return 'Customer Support';
+  if (lower.includes('operation') || lower.includes('ops') || lower.includes('logistics')) return 'Operations';
+  if (lower.includes('finance') || lower.includes('accounting') || lower.includes('cfo') || lower.includes('admin')) return 'Finance & Administration';
+  if (lower.includes('hr') || lower.includes('talent') || lower.includes('recruit') || lower.includes('people')) return 'HR & Talent';
+  if (lower.includes('security') || lower.includes('compliance') || lower.includes('risk') || lower.includes('audit')) return 'Security & Compliance';
+  if (lower.includes('legal') || lower.includes('counsel') || lower.includes('attorney')) return 'Legal & Compliance';
+  return 'Unknown';
 }
 
 // ─── Generate preliminary people signals from existing recon data ──

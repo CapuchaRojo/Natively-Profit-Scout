@@ -79,8 +79,9 @@ export type AccessStatus =
   | 'contacted'
   | 'meeting_booked'
   | 'champion'
-  | 'blocker';
-
+  | 'blocker'
+  | 'researchable'
+  | 'email_known';
 export type StakeholderCategory =
   | 'economic_buyer'
   | 'technical_buyer'
@@ -507,11 +508,11 @@ export interface ReconDiscoveredUrl {
   url: string;
   pageType: string;
   discoveryMethod: 'homepage-link' | 'common-path' | 'sitemap' | 'user-added';
-  status: 'unscanned' | 'scanned' | 'failed' | 'blocked' | 'pasted';
+  status: 'unscanned' | 'scanned' | 'failed' | 'blocked' | 'pasted' | 'analyzing';
   confidence: ConfidenceLevel;
   notes: string;
   fetchedText?: string;
-  fetchSourceType?: 'browser-fetch' | 'pasted-public-page';
+  fetchSourceType?: 'browser-fetch' | 'pasted-public-page' | 'edge-function' | 'ninjapear-proxy';
 }
 
 export interface DetectedTool {

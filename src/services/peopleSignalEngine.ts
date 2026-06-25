@@ -51,6 +51,110 @@ const ROLE_SIGNALS: { keywords: string[]; roleType: RoleMapEntry['roleType']; ti
   { keywords: ['security/compliance ownership'], roleType: 'security_compliance', title: 'Security / Compliance Owner', department: 'Security & Compliance' },
 ];
 
+// ─── First-Name Dictionary & Product Blocklist ──────────────────
+
+export const COMMON_FIRST_NAMES = new Set([
+  'aaron','adam','adrian','alex','alexander','alice','amanda','amy','andrea','andrew',
+  'angela','anna','anthony','ashley','barbara','ben','benjamin','brandon','brenda',
+  'brian','brittany','carlos','carol','carolyn','chad','charles','chris','christian',
+  'christina','christopher','claire','cynthia','dan','daniel','david','deborah','dennis',
+  'diana','donald','donna','douglas','edward','elizabeth','emily','emma','eric',
+  'erica','ethan','gary','george','greg','gregory','hannah','heather','helen',
+  'henry','jacob','jake','james','jane','janet','jason','jeff','jeffrey','jennifer',
+  'jeremy','jessica','jill','jim','joan','joe','john','jonathan','jordan','jose',
+  'josh','joshua','joyce','julia','julie','justin','karen','kate','katherine','kathryn',
+  'kathy','katie','keith','kelly','ken','kevin','kim','kimberly','kyle','laura',
+  'lauren','linda','lisa','liz','marc','margaret','maria','mark','mary','matt',
+  'matthew','megan','melissa','michael','michelle','mike','nancy','natalie','nathan',
+  'nicholas','nicole','pamela','pat','patrick','paul','peter','philip','rachel',
+  'raymond','rebecca','richard','robert','ronald','ryan','samantha','samuel','sandra',
+  'sarah','scott','sean','sharon','stephanie','stephen','steve','steven','susan',
+  'taylor','teresa','thomas','tim','timothy','todd','tom','tyler','victoria','william','zach',
+  'abigail','aiden','alexa','alison','allison','alvin','amelia','ann','anne','april',
+  'arthur','austin','beatrice','beth','betty','beverly','bob','brad','bradley','bruce',
+  'bryan','caleb','cameron','carl','carmen','carrie','catherine','charlotte','cheryl',
+  'chloe','christine','clara','clarence','cody','colin','connor','corey','courtney',
+  'craig','curtis','dale','dana','danielle','darlene','darren','dave','dean','debbie',
+  'debra','denise','derek','derrick','devin','diane','dolores','dominique','dustin',
+  'dylan','earl','eddie','edith','edna','eileen','elaine','eleanor','elijah','ella',
+  'ellen','ellie','elsie','erin','esther','eugene','eva','evan','evelyn','frank',
+  'fred','frederick','gabriel','gail','gavin','genevieve','georgia','gilbert',
+  'glenda','glenn','gloria','grace','guy','harold','harry','hazel','hector','holly',
+  'howard','hugh','ian','irene','isaac','isabella','jack','jackson','jacqueline',
+  'jamie','jared','jay','jean','jeanette','jenna','jeremiah','jerry','jesse','jesus',
+  'joanne','jocelyn','joel','johnny','jon','joseph','josephine','judith','judy',
+  'kaitlyn','kara','karl','kathleen','katrina','kayla','kendra','kenneth','kerry',
+  'kristen','kristin','kurt','lance','larry','lawrence','leah','lee','leo','leon',
+  'leonard','leslie','lillian','lindsay','logan','lois','lori','louis','louise',
+  'lucas','lucy','luis','luke','lydia','mackenzie','madison','malcolm','manuel',
+  'marcus','marilyn','marion','marjorie','marlene','marshall','martha','martin',
+  'marvin','maurice','max','melanie','melinda','melvin','mia','micheal','miguel',
+  'mildred','mitchell','molly','monica','morgan','myron','naomi','nathaniel','neil',
+  'nick','nina','noah','nolan','norma','norman','olivia','owen','paige','pam',
+  'patricia','paula','pauline','peggy','penny','perry','phillip','phyllis','randall',
+  'randy','regina','reginald','renee','rhonda','ricardo','rick','ricky','riley',
+  'rita','roberta','robin','rodney','roger','ron','ronnie','rosa','rosemary','roy',
+  'ruby','russell','ruth','sally','sam','sara','savannah','sebastian','seth','shane',
+  'shannon','shaun','shawn','sheila','shelby','sherry','shirley','sidney','sierra',
+  'sofia','sonia','stacey','stacy','stanley','stella','sue','sylvia','tammy','tara',
+  'ted','terrance','terry','thelma','theodore','tiffany','timmy','tina','tommy',
+  'toni','tony','tracey','travis','trevor','troy','tyrone','valerie','vanessa',
+  'vera','vernon','veronica','vincent','virginia','vivian','wade','wallace','walter',
+  'wanda','warren','wayne','wendy','wesley','willard','willie','wilma','xavier','zachary',
+]);
+
+export const PRODUCT_BLOCKLIST = new Set([
+  'builder platform', 'data platform', 'model hub', 'compute infrastructure',
+  'cloud services', 'api gateway', 'machine learning', 'artificial intelligence',
+  'customer portal', 'admin dashboard', 'mobile app', 'web application',
+  'content management', 'analytics dashboard', 'payment processing',
+  'marketing automation', 'sales platform', 'support platform',
+  'integration platform', 'developer platform', 'app marketplace',
+  'knowledge base', 'help center', 'community forum', 'learning management',
+]);
+
+export function isLikelyPersonName(text: string): boolean {
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/);
+
+  // Must be 2-3 words (first + last, or first + middle + last)
+  if (words.length < 2 || words.length > 3) return false;
+
+  // First word must be a known first name
+  if (!COMMON_FIRST_NAMES.has(words[0].toLowerCase())) return false;
+
+  // Must not match product blocklist
+  if (PRODUCT_BLOCKLIST.has(trimmed.toLowerCase())) return false;
+
+  // No digits
+  if (/\d/.test(trimmed)) return false;
+
+  // Not all uppercase
+  if (trimmed === trimmed.toUpperCase() && trimmed.length > 3) return false;
+
+  // Reasonable name length
+  if (trimmed.length > 30) return false;
+
+  return true;
+}
+
+export const ROLE_TITLE_KEYWORDS = [
+  'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cio', 'ciso', 'chro', 'cpo',
+  'vp ', 'vice president', 'director', 'head of', 'manager', 'lead ',
+  'chief', 'president', 'founder', 'co-founder', 'partner',
+  'senior ', 'principal ', 'staff ', 'architect', 'engineer',
+  'analyst', 'specialist', 'associate', 'coordinator',
+  'representative', 'consultant', 'advisor', 'executive',
+  'administrator', 'supervisor', 'officer', 'sales ', 'marketing',
+  'support', 'operations', 'finance', 'product manager',
+  'customer success', 'account executive', 'business development',
+];
+
+// Check if a line/paragraph contains a known role keyword
+export function hasRoleKeywordNearby(text: string): boolean {
+  return ROLE_TITLE_KEYWORDS.some(k => text.toLowerCase().includes(k));
+}
+
 // ─── Milestone Keywords ───────────────────────────────────────
 
 const MILESTONE_SIGNALS: { keywords: string[]; milestoneType: MilestoneSignal['milestoneType']; description: string }[] = [

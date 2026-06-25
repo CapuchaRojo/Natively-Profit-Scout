@@ -8,7 +8,7 @@ import type {
 } from '../types';
 import { fingerprintPage, inferToolsFromText } from './toolFingerprintEngine';
 import { inferWorkflowsFromText } from './workflowInferenceEngine';
-import { scanUrlViaBackend } from './reconApiClient';
+import { scanUrlViaBackend, fetchPageViaEdgeFunction } from './reconApiClient';
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -282,7 +282,7 @@ export async function fetchPublicUrl(url: string): Promise<{
     if (isCors) {
       return {
         success: false,
-        error: 'Fetch blocked by browser/CORS. Paste the page text or add a backend proxy later.',
+        error: 'Local fetch failed — retrying via proxy',
         blocked: true,
       };
     }
@@ -301,20 +301,60 @@ export async function fetchWithCorsFallback(url: string): Promise<{
   text?: string;
   error?: string;
   blocked?: boolean;
+  fetchMethod?: string;
 }> {
-  // Try direct fetch first
-  const result = await fetchPublicUrl(url);
+  // ── 1st: Edge Function server-side fetch (no CORS, fast) ──
+  console.log(`[ReconScanner] Attempting edge function proxy for: ${url}`);
+  const edgeResult = await fetchPageViaEdgeFunction(url);
 
-  // If blocked by CORS and backend is configured, try backend
-  if (result.blocked) {
-    const backendResult = await scanUrlViaBackend(url);
-    if (backendResult.success) {
-      return { success: true, html: backendResult.data as string, text: cleanHtmlToText(backendResult.data as string) };
-    }
-    // Fall through — return the CORS error with instructions
+  if (edgeResult.success && edgeResult.html) {
+    const text = edgeResult.text || cleanHtmlToText(edgeResult.html);
+    console.log(`[ReconScanner] ✓ Edge function succeeded for: ${url}`);
+    return {
+      success: true,
+      html: edgeResult.html,
+      text,
+      fetchMethod: 'edge-function',
+    };
   }
 
-  return result;
+  if (edgeResult.blocked) {
+    console.log(`[ReconScanner] Edge function blocked (${edgeResult.error}), trying browser fetch...`);
+  } else {
+    console.log(`[ReconScanner] Edge function failed: ${edgeResult.error}, falling back to browser fetch...`);
+  }
+
+  // ── 2nd: Browser fetch (may work for CORS-enabled sites) ──
+  const result = await fetchPublicUrl(url);
+
+  if (result.success && result.html) {
+    console.log(`[ReconScanner] ✓ Browser fetch succeeded for: ${url}`);
+    return { ...result, fetchMethod: 'browser-fetch' };
+  }
+
+  // ── 3rd: NinjaPear proxy (last resort, rate-limited) ──
+  if (result.blocked) {
+    console.log(`[ReconScanner] Browser fetch blocked, trying NinjaPear proxy for: ${url}`);
+    const backendResult = await scanUrlViaBackend(url);
+    if (backendResult.success && backendResult.data) {
+      console.log(`[ReconScanner] ✓ NinjaPear proxy succeeded for: ${url}`);
+      return {
+        success: true,
+        html: backendResult.data as string,
+        text: cleanHtmlToText(backendResult.data as string),
+        fetchMethod: 'ninjapear-proxy',
+      };
+    }
+    console.log(`[ReconScanner] ✗ NinjaPear proxy also failed for: ${url}`);
+  }
+
+  // ── All methods failed ──
+  console.log(`[ReconScanner] ✗ All fetch methods failed for: ${url}`);
+  return {
+    success: false,
+    blocked: true,
+    error: edgeResult.error || result.error || 'All fetch methods failed. Paste page content manually.',
+  };
 }
 
 // ─── Company Surface Scanner ────────────────────────────────────
@@ -345,12 +385,12 @@ export async function scanCompanyPublicSurface(
 
   // Scan each URL
   for (const urlInfo of toScan) {
-    const result = await fetchPublicUrl(urlInfo.url);
+    const result = await fetchWithCorsFallback(urlInfo.url);
 
     if (result.success && result.html) {
       urlInfo.status = 'scanned';
       urlInfo.fetchedText = (result.text || '').slice(0, settings.maxCharsPerPage);
-      urlInfo.fetchSourceType = 'browser-fetch';
+      urlInfo.fetchSourceType = result.fetchMethod || 'browser-fetch';
 
       fetchedPages.push({ url: urlInfo.url, html: result.html, text: result.text || '' });
       allTexts.push({ text: result.text || '', url: urlInfo.url });
@@ -366,7 +406,7 @@ export async function scanCompanyPublicSurface(
       }
     } else if (result.blocked) {
       urlInfo.status = 'blocked';
-      urlInfo.notes = result.error || 'Blocked by CORS';
+      urlInfo.notes = result.error || 'All fetch methods failed. Paste page content manually.';
     } else {
       urlInfo.status = 'failed';
       urlInfo.notes = result.error || 'Fetch failed';

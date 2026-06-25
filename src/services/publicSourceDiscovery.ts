@@ -5,7 +5,7 @@
 // ============================================================
 
 import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
-import { analyzePeopleText } from './peopleSignalEngine';
+import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
 
 // ─── ID Generator ─────────────────────────────────────────────
 
@@ -357,6 +357,7 @@ export function analyzeLinkedInPostText(
 }
 
 // ─── Extract employee names from pasted LinkedIn company text ────
+// v0.6 — Now uses first-name dictionary + role proximity filter
 
 export function extractEmployeesFromLinkedInText(
   text: string,
@@ -372,6 +373,13 @@ export function extractEmployeesFromLinkedInText(
   while ((match = nameRolePattern.exec(text)) !== null) {
     const name = match[1].trim();
     const role = match[2].trim();
+
+    // Gate 1: Must be a likely person name (first-name dict check)
+    if (!isLikelyPersonName(name)) continue;
+
+    // Gate 2: Role must contain a known role keyword
+    if (!hasRoleKeywordNearby(role)) continue;
+
     if (!seen.has(name) && name.length > 3) {
       seen.add(name);
       employees.push({
@@ -381,7 +389,7 @@ export function extractEmployeesFromLinkedInText(
         department: inferDepartmentFromRole(role),
         source: 'linkedin_employee_profile',
         status: 'suggested',
-        confidence: 'Medium',
+        confidence: 'High',
       });
     }
   }
@@ -390,19 +398,102 @@ export function extractEmployeesFromLinkedInText(
   const bulletPattern = /[•\-]\s*([A-Z][a-z]+\s+[A-Z][a-z]+)/g;
   while ((match = bulletPattern.exec(text)) !== null) {
     const name = match[1].trim();
-    if (!seen.has(name) && name.length > 3) {
-      seen.add(name);
-      employees.push({
-        id: uid('emp'),
-        name,
-        source: 'linkedin_employee_profile',
-        status: 'suggested',
-        confidence: 'Low',
-      });
+    if (!seen.has(name) && isLikelyPersonName(name) && name.length > 3) {
+      // Check if a role keyword appears nearby in the same line
+      const lineIdx = lines.findIndex(l => l.includes(name));
+      if (lineIdx >= 0 && hasRoleKeywordNearby(lines[lineIdx])) {
+        seen.add(name);
+        employees.push({
+          id: uid('emp'),
+          name,
+          source: 'linkedin_employee_profile',
+          status: 'suggested',
+          confidence: 'Low',
+        });
+      }
     }
   }
 
   return employees;
+}
+
+// ─── Extract stakeholder mentions from general business text ─────
+// v0.6 — Uses first-name dict + role proximity to identify real people
+
+export interface StakeholderMention {
+  name: string;
+  role?: string;
+  department?: string;
+  evidence: string;
+  confidence: string;
+}
+
+export function extractStakeholderMentions(text: string): StakeholderMention[] {
+  const mentions: StakeholderMention[] = [];
+  const seen = new Set<string>();
+  const lines = text.split('\n');
+
+  // Pattern 1: "Name is/was/joined as Role"
+  const pattern1 = /([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+(?:the\s+)?|\s+joined\s+(?:as\s+(?:the\s+)?)?|\s+serves\s+(?:as\s+(?:the\s+)?)?|\s+as\s+(?:the\s+)?)([A-Za-z][A-Za-z\s,]+?(?:Officer|Director|Manager|Lead|President|Chief|Head|VP|Vice|Executive|Architect|Engineer|Consultant|Specialist|Analyst|Coordinator|Administrator|Supervisor|Partner|Founder|Advisor|Representative))\b/;
+  let match;
+  while ((match = pattern1.exec(text)) !== null) {
+    const name = match[1].trim();
+    const role = match[2].trim();
+    if (!isLikelyPersonName(name)) continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      const snippet = text.slice(Math.max(0, match.index - 30), Math.min(text.length, match.index + match[0].length + 80));
+      mentions.push({
+        name,
+        role,
+        department: inferDepartmentFromRole(role),
+        evidence: snippet.trim(),
+        confidence: 'High',
+      });
+    }
+  }
+
+  // Pattern 2: "Name, Role" or "Name — Role" (line-based)
+  const pattern2 = /^([A-Z][a-z]+\s+[A-Z][a-z]+)\s*[|\-–—,]+\s*([A-Za-z][A-Za-z\s\/]+)$/m;
+  for (const line of lines) {
+    const m = line.match(pattern2);
+    if (!m) continue;
+    const name = m[1].trim();
+    const role = m[2].trim();
+    if (!isLikelyPersonName(name)) continue;
+    if (!hasRoleKeywordNearby(role)) continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      mentions.push({
+        name,
+        role,
+        department: inferDepartmentFromRole(role),
+        evidence: line.trim(),
+        confidence: 'High',
+      });
+    }
+  }
+
+  // Pattern 3: "Name" followed by "VP/Director/Head/etc of X" anywhere on same line
+  const pattern3 = /([A-Z][a-z]+\s+[A-Z][a-z]+)/g;
+  while ((match = pattern3.exec(text)) !== null) {
+    const name = match[1].trim();
+    if (!isLikelyPersonName(name)) continue;
+    if (seen.has(name)) continue;
+    // Find the line this name appears on and check for role keywords
+    const lineIdx = lines.findIndex(l => l.includes(name));
+    if (lineIdx >= 0 && hasRoleKeywordNearby(lines[lineIdx])) {
+      seen.add(name);
+      const line = lines[lineIdx];
+      mentions.push({
+        name,
+        evidence: line.trim(),
+        confidence: 'Medium',
+      });
+    }
+  }
+
+  return mentions;
 }
 
 // ─── Infer department from role title ────────────────────────────

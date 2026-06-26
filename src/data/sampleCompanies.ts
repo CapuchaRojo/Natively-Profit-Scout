@@ -236,8 +236,72 @@ export const greenLeafLandscaping: Company = {
   isSample: true,
 };
 
+// ============== A Storm is Coming LLC ==============
+export const aStormIsComing: Company = {
+  id: 'sample-astorm',
+  basic: {
+    name: 'A Storm is Coming LLC',
+    website: 'https://astormscoming.com',
+    industry: 'Professional Services / Creative Agency',
+    location: 'Remote-First (US)',
+    employeeCount: 5,
+    revenueEstimate: 'To be determined',
+    notes: 'Real company used for testing the Natively Profit Scout NinjaPear proxy flow. Full company profile to be filled in as recon data comes in.',
+  },
+  business: {
+    productsServices: 'Professional services — details to be discovered via public recon.',
+    targetCustomers: 'To be discovered',
+    salesModel: 'To be discovered',
+    deliveryModel: 'To be discovered',
+    supportModel: 'To be discovered',
+    operationsModel: 'To be discovered',
+  },
+  people: {
+    leadership: 'To be discovered',
+    salesTeam: 'To be discovered',
+    technicalTeam: 'To be discovered',
+    operationsTeam: 'To be discovered',
+    supportTeam: 'To be discovered',
+    financeAdmin: 'To be discovered',
+    knownChampions: '',
+    knownBlockers: '',
+    unknownDecisionMaker: '',
+  },
+  tools: {
+    crm: '', websitePlatform: '', schedulingTools: '', emailTools: '',
+    projectManagement: '', communicationTools: '', supportTools: '',
+    billingTools: '', automationTools: '', aiTools: '', securityTools: '',
+    unknownTools: '',
+  },
+  workloadFriction: {
+    dailyRepeats: '', manualCopyPaste: '', delays: '', customerWait: '',
+    employeeTimeWaste: '', missedRevenue: '', errors: '', complianceRisk: '',
+    softwareCouldAssist: '',
+  },
+  salesContext: {
+    approachReason: 'Recon will inform the best approach.',
+    likelyBusinessPain: 'To be discovered',
+    desiredResult: 'To be discovered',
+    budgetOwner: 'To be discovered',
+    painFeeler: 'To be discovered',
+    dealBlocker: 'To be discovered',
+    dealChampion: 'To be discovered',
+  },
+  painPoints: [],
+  stakeholders: [],
+  toolMap: [],
+  highladerRepurpose: [],
+  opportunities: [],
+  salesPlan: undefined,
+  crmExport: undefined,
+  createdAt: now,
+  updatedAt: now,
+  isSample: true,
+};
+
 export const sampleCompanies: Company[] = [
   techFlowSolutions,
   brightPathConsulting,
   greenLeafLandscaping,
+  aStormIsComing,
 ];

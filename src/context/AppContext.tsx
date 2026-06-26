@@ -58,8 +58,20 @@ function loadState(): AppState {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
+      // Ensure all companies have required array fields (defensive against stale localStorage)
+      const companies = (parsed.companies || []).map((c: Company) => ({
+        ...c,
+        publicIntelSources: c.publicIntelSources || [],
+        publicIntelSignals: c.publicIntelSignals || [],
+        publicIntelOpenings: c.publicIntelOpenings || [],
+        painPoints: c.painPoints || [],
+        stakeholders: c.stakeholders || [],
+        toolMap: c.toolMap || [],
+        highladerRepurpose: c.highladerRepurpose || [],
+        opportunities: c.opportunities || [],
+      }));
       return {
-        companies: parsed.companies || [],
+        companies,
         settings: { ...defaultSettings, ...parsed.settings },
         currentCompanyId: parsed.currentCompanyId || null,
       };

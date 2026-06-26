@@ -16,19 +16,22 @@ import {
   discoverPublicUrls, fetchWithCorsFallback,
   applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
+  runFullAggressiveRecon,
 } from '../services/reconScanner';
+import type { AggressiveReconResult } from '../services/reconScanner';
 import { analyzePeopleText } from '../services/peopleSignalEngine';
 import { getSourceQualitySummary } from '../services/contentQuality';
 import { extractNamedPeople } from '../services/peopleNameExtractor';
+import { mapExtractedPeopleToStakeholders } from '../services/stakeholderEnricher';
+import type { ExtractedPerson } from '../services/teamExtractor';
+import type { StakeholderMention } from '../services/publicSourceDiscovery';
 import {
   discoverPeopleSources, generatePreliminaryPeopleSignals,
   discoverLinkedInEmployees, discoverLinkedInPosts,
   analyzeLinkedInPostText, extractEmployeesFromLinkedInText,
   extractStakeholderMentions,
 } from '../services/publicSourceDiscovery';
-import type { StakeholderMention } from '../services/publicSourceDiscovery';
 import type {
-  Company, CompanyPeople, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
   ConfidenceLevel, PeopleSignalSourceType, AccessStatus,
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
@@ -139,10 +142,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [extractedPersonNames, setExtractedPersonNames] = useState<string[]>([]);
   const [extractedStakeholderMentions, setExtractedStakeholderMentions] = useState<StakeholderMention[]>([]);
   const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
-
   const [generatedStakeholders, setGeneratedStakeholders] = useState<Stakeholder[]>([]);
   const [showBriefPreview, setShowBriefPreview] = useState(false);
   const [briefText, setBriefText] = useState('');
+
+  // ── Aggressive Recon state (Phase 2) ─────────────────────────
+  const [aggressiveReconResult, setAggressiveReconResult] = useState<AggressiveReconResult | null>(null);
+  const [aggressiveReconRunning, setAggressiveReconRunning] = useState(false);
+  const [aggressiveReconStatus, setAggressiveReconStatus] = useState('');
+
+  // Restore recon state from company on mount
   // Restore recon state from company on mount
   useEffect(() => {
     if (company?.reconFindings) {
@@ -242,6 +251,96 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
 
+  // ─── Aggressive Full Recon Handler (Phase 2) ──────────────
+
+  const handleAggressiveRecon = async () => {
+    if (!homepageUrl) return;
+    setAggressiveReconRunning(true);
+    setAggressiveReconStatus('Initializing full aggressive recon...');
+    setAggressiveReconResult(null);
+
+    try {
+      setAggressiveReconStatus('Scanning team pages for employees...');
+      const result = await runFullAggressiveRecon(company.basic.name, homepageUrl);
+      
+      setAggressiveReconResult(result);
+      
+      // Merge extracted people into the People tab state
+      if (result.extractedPeople.length > 0) {
+        const newRoleMap: RoleMapEntry[] = result.extractedPeople.map(p => ({
+          roleType: inferRoleType(p.role),
+          roleTitle: p.role || p.name,
+          department: p.department,
+          evidence: p.evidence,
+          confidence: p.confidence,
+          sourceType: 'company_team_page',
+          sourceUrl: p.sourceUrl,
+        }));
+        
+        setPeopleRoleMap(prev => {
+          const existing = new Map(prev.map(r => [r.roleTitle, r]));
+          for (const r of newRoleMap) {
+            if (!existing.has(r.roleTitle)) existing.set(r.roleTitle, r);
+          }
+          return Array.from(existing.values());
+        });
+        setPeopleSourceMode('recon');
+        setPublicPeopleNotes(`Aggressive recon: ${result.extractedPeople.length} people extracted`);
+        setPublicLeadershipText(`Extracted from team pages: ${result.extractedPeople.map(p => p.name).join(', ')}`);
+      }
+
+      // Auto-generate stakeholders from extracted people
+      if (result.generatedStakeholders.length > 0) {
+        const existingIds = new Set(company.stakeholders.map(s => s.role.toLowerCase()));
+        const newStakeholders = result.generatedStakeholders.filter(
+          s => !existingIds.has(s.role.toLowerCase())
+        );
+        if (newStakeholders.length > 0) {
+          updateCompany(company.id, {
+            stakeholders: [...company.stakeholders, ...newStakeholders],
+          });
+          setGeneratedStakeholders(newStakeholders);
+          setStakeholderGenMessage(
+            `✅ Created ${newStakeholders.length} stakeholder records from aggressive recon`
+          );
+        }
+      }
+
+      // Persist recon URL discovery results
+      if (homepageUrl) {
+        const urls = discoverPublicUrls(homepageUrl);
+        if (urls.length > 0 && discoveredUrls.length === 0) {
+          setDiscoveredUrls(urls);
+        }
+      }
+
+      setScanStatus('done');
+      setAggressiveReconStatus(result.summary);
+      showToast(`✅ ${result.summary}`, 'success');
+      
+      // Navigate to People tab to show results
+      setActiveTab('people');
+    } catch (err) {
+      setAggressiveReconStatus(`Recon failed: ${String(err)}`);
+      showToast(`❌ Aggressive recon failed: ${String(err)}`, 'error');
+    } finally {
+      setAggressiveReconRunning(false);
+    }
+  };
+
+  // Helper: infer role type from role string
+  function inferRoleType(role: string): RoleMapEntry['roleType'] {
+    const lower = role.toLowerCase();
+    if (/\b(ceo|cto|cfo|coo|founder|president|chief|owner)\b/i.test(lower)) return 'executive_founder';
+    if (/\b(sales|account|bdr|sdr|revenue|gtm)\b/i.test(lower)) return 'sales_gtm';
+    if (/\b(operations|ops|logistics|supply|facilities)\b/i.test(lower)) return 'operations';
+    if (/\b(finance|accounting|cfo|controller|treasurer)\b/i.test(lower)) return 'finance_admin';
+    if (/\b(support|customer|service|help|client)\b/i.test(lower)) return 'support';
+    if (/\b(engineer|developer|architect|product|technical|cto)\b/i.test(lower)) return 'technical_product';
+    if (/\b(security|compliance|risk|audit)\b/i.test(lower)) return 'security_compliance';
+    return 'unknown_decision_maker_gap';
+  }
+
   const handleAddExtraUrl = () => {
     if (!extraUrls.trim()) return;
     const newUrls = extraUrls.split('\n').filter(Boolean);
@@ -328,8 +427,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
 
-  // ─── Step 2: Fetch & Analyze ────────────────────────────────
-
   const handleFetchAndAnalyze = async () => {
     setScanStatus('fetching');
     setScanError('');
@@ -343,7 +440,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
     // Lazy-import content quality
     const { classifyFetchResult, classifySourceWeight, cleanContentForInference, shouldExcludeFromInference, shouldSuppressWorkflowInference } = await import('../services/contentQuality');
-
 
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
@@ -677,6 +773,56 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
   const handleGenerateStakeholdersFromPeople = () => {
+    // ── Strategy 1: Named people from pasted text (via extractNamedPeople) ──
+    // This is the preferred path — produces real named stakeholders with talk tracks
+    const namedPeople = extractNamedPeople(manualPeopleText);
+    
+    if (namedPeople.length > 0) {
+      // Convert named people to ExtractedPerson format for stakeholderEnricher
+      const extractedPeople: ExtractedPerson[] = namedPeople.map(np => ({
+        name: np.name,
+        role: np.role || '',
+        department: np.department || 'Unknown',
+        evidence: np.evidence,
+        sourceUrl: peopleSourceUrl || company.basic.website,
+        confidence: np.confidence,
+      }));
+
+      // Use the stakeholder enricher for rich mapping
+      const { stakeholders, skipped, duplicates } = mapExtractedPeopleToStakeholders(
+        extractedPeople,
+        company.stakeholders
+      );
+
+      if (stakeholders.length > 0) {
+        updateCompany(company.id, {
+          stakeholders: [...company.stakeholders, ...stakeholders],
+          reconFindings: {
+            ...company.reconFindings!,
+            peopleSignals: {
+              roleMap: peopleRoleMap,
+              stakeholderHypotheses: peopleStakeholderHyps,
+              hiringSignals: peopleHiringSignals,
+              milestoneSignals: peopleMilestoneSignals,
+              outreachAngles: peopleOutreachAngles,
+              discoveryQuestions: peopleDiscoveryQuestions,
+            },
+          },
+        });
+
+        setGeneratedStakeholders(stakeholders);
+        const namedStakeholders = stakeholders.filter(s => s.name);
+        if (namedStakeholders.length > 0) {
+          const names = namedStakeholders.map(s => `${s.name} (${s.role})`).join(', ');
+          setStakeholderGenMessage(`✅ Created ${stakeholders.length} stakeholder record${stakeholders.length !== 1 ? 's' : ''} with names: ${names}`);
+        } else {
+          setStakeholderGenMessage(`✅ Created ${stakeholders.length} stakeholder record${stakeholders.length !== 1 ? 's' : ''} from extracted people`);
+        }
+        return;
+      }
+    }
+
+    // ── Strategy 2: Fall back to role hypotheses (current behavior) ──
     const hyps = peopleStakeholderHyps.length > 0
       ? peopleStakeholderHyps
       : (company.reconFindings?.peopleSignals?.stakeholderHypotheses || []);
@@ -701,7 +847,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
         return !existingRoles.has(`${h.roleTitle}::${cat}`);
       })
       .map((h, i) => {
-        const roleWord = h.roleTitle.split(' ')[0].toLowerCase();
+        // Try to match extracted names from the text
+        const roleWord = h.roleTitle.split(/\s+/)[0].toLowerCase();
         const matchingMention = extractedStakeholderMentions.find(m =>
           m.role && m.role.toLowerCase().includes(roleWord)
         );
@@ -757,7 +904,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
     }
   };
-
   // ─── CRM Brief & Copy Handler ────────────────────────────────
 
   const generateCrmBriefText = (): string => {
@@ -1231,18 +1377,35 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                 >
                   {scanStatus === 'discovering' ? 'Discovering...' : 'Discover URLs'}
                 </button>
+                <button
+                  className="btn btn-accent"
+                  onClick={handleAggressiveRecon}
+                  disabled={!homepageUrl || aggressiveReconRunning}
+                  style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', border: 'none' }}
+                >
+                  {aggressiveReconRunning ? '⚡ Recon Running...' : '🚀 Full Aggressive Recon'}
+                </button>
               </div>
             </div>
 
-            {fetchProgress && (
-              <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
-                {fetchProgress}
+            {aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(245,158,11,0.08)', borderRadius: 6,
+                border: '1px solid rgba(245,158,11,0.3)', marginBottom: 12, fontSize: 12, color: '#f59e0b',
+              }}>
+                ⚡ {aggressiveReconStatus}
               </div>
             )}
 
-            {scanError && (
-              <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
-                ❌ {scanError}
+            {aggressiveReconResult && !aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(16,185,129,0.08)', borderRadius: 6,
+                border: '1px solid rgba(16,185,129,0.3)', marginBottom: 12, fontSize: 12, color: '#10b981',
+              }}>
+                ✅ {aggressiveReconStatus}
+                <div style={{ marginTop: 4, fontSize: 11, color: '#94a3b8' }}>
+                  View results in the People tab →
+                </div>
               </div>
             )}
 
@@ -1729,15 +1892,145 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
             <span className="input-label" style={{ margin: 0 }}>👤 Public People & Role Signals</span>
             {peopleRoleMap.length > 0 && <span className="badge badge-purple" style={{ fontSize: 10 }}>{peopleRoleMap.length} roles</span>}
           </div>
+          <div className="card-body">
             <LinkedInSourceAssistant
               companyName={company.basic.name}
               onAutoFill={handleLinkedInAutoFill}
             />
+            {aggressiveReconResult && !aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(16,185,129,0.06)', borderRadius: 6,
+                border: '1px solid rgba(16,185,129,0.25)', marginBottom: 16,
+              }}>
+                <div style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginBottom: 8 }}>
+                  ⚡ Aggressive Recon Complete
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
+                  {aggressiveReconResult.extractedPeople.length > 0 && (
+                    <div>👤 {aggressiveReconResult.extractedPeople.length} people extracted from team pages</div>
+                  )}
+                  {aggressiveReconResult.linkedInJobs.length > 0 && (
+                    <div>💼 {aggressiveReconResult.linkedInJobs.length} LinkedIn job postings found</div>
+                  )}
+                  {aggressiveReconResult.linkedInCompany?.description && (
+                    <div>🏢 LinkedIn company profile captured</div>
+                  )}
+                  {aggressiveReconResult.searchIntel.length > 0 && (
+                    <div>🔍 {aggressiveReconResult.searchIntel.reduce((sum, s) => sum + s.signals.length, 0)} intel signals from web search</div>
+                  )}
+                  {aggressiveReconResult.generatedStakeholders.length > 0 && (
+                    <div>✅ {aggressiveReconResult.generatedStakeholders.length} stakeholder records generated</div>
+                  )}
+                  {aggressiveReconResult.errors.length > 0 && (
+                    <div style={{ color: '#f59e0b', marginTop: 4 }}>
+                      ⚠️ {aggressiveReconResult.errors.length} errors (non-blocking)
+                    </div>
+                  )}
+                </div>
+                {/* LinkedIn Jobs Preview */}
+                {aggressiveReconResult.linkedInJobs.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
+                      💼 LinkedIn Job Postings
+                    </div>
+                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
+                      {aggressiveReconResult.linkedInJobs.slice(0, 10).map((job, i) => (
+                        <div key={i} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
+                        }}>
+                          <span style={{ color: '#e2e8f0', flex: 1 }} className="truncate">{job.title}</span>
+                          <span className="badge badge-amber" style={{ fontSize: 8 }}>{job.department}</span>
+                          {job.techStackMentions.length > 0 && (
+                            <span style={{ color: '#3b82f6', fontSize: 8 }}>
+                              {job.techStackMentions.slice(0, 3).join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Social Discovery Preview */}
+                {aggressiveReconResult.socialDiscoveryUrls && aggressiveReconResult.socialDiscoveryUrls.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
+                      🌐 Social Profiles Discovered
+                    </div>
+                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
+                      {aggressiveReconResult.socialDiscoveryUrls
+                        .filter(u => u.confidence !== 'Low')
+                        .slice(0, 12)
+                        .map((url, i) => (
+                        <div key={i} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
+                        }}>
+                          <span style={{
+                            fontSize: 8, padding: '1px 4px', borderRadius: 2, flexShrink: 0,
+                            background: url.confidence === 'High' ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.1)',
+                            color: url.confidence === 'High' ? '#10b981' : '#f59e0b',
+                          }}>
+                            {url.platform}
+                          </span>
+                          <a href={url.url} target="_blank" rel="noopener noreferrer"
+                            className="truncate" style={{ color: '#3b82f6', flex: 1, textDecoration: 'none' }}>
+                            {url.url}
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* News Intel Preview */}
+                {aggressiveReconResult.newsIntel && aggressiveReconResult.newsIntel.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
+                      📰 News Intelligence
+                    </div>
+                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
+                      {aggressiveReconResult.newsIntel
+                        .flatMap(n => n.signals)
+                        .filter(s => s.urgencyLevel === 'high' || s.confidence === 'High')
+                        .slice(0, 10)
+                        .map((signal, i) => (
+                        <div key={i} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
+                        }}>
+                          <span style={{
+                            fontSize: 8, padding: '1px 4px', borderRadius: 2, flexShrink: 0,
+                            background: signal.growthIndicator && signal.painIndicator ? 'rgba(168,85,247,0.12)'
+                              : signal.growthIndicator ? 'rgba(16,185,129,0.12)'
+                              : signal.painIndicator ? 'rgba(239,68,68,0.1)'
+                              : 'rgba(100,116,139,0.1)',
+                            color: signal.growthIndicator && signal.painIndicator ? '#a855f7'
+                              : signal.growthIndicator ? '#10b981'
+                              : signal.painIndicator ? '#ef4444'
+                              : '#64748b',
+                          }}>
+                            {signal.growthIndicator ? '📈' : signal.painIndicator ? '⚠️' : ''} {signal.type.replace(/_/g, ' ')}
+                          </span>
+                          <span className="truncate" style={{ color: '#e2e8f0', flex: 1 }}>{signal.title}</span>
+                          <span style={{
+                            fontSize: 7, padding: '1px 3px', borderRadius: 2, flexShrink: 0,
+                            background: signal.urgencyLevel === 'high' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.08)',
+                            color: signal.urgencyLevel === 'high' ? '#ef4444' : '#f59e0b',
+                          }}>
+                            {signal.urgencyLevel}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ChatGPT JSON Import */}
-            <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
 
             {/* People Source Discovery Section */}
+            <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
             <div style={{
               background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)',
               borderRadius: 6, padding: '12px 14px', marginBottom: 16,
@@ -1745,6 +2038,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
                 Auto-discover people intelligence sources. Our proxy scanner will aggressively fetch LinkedIn jobs, team pages, news, and public social profiles.
                 Tip: Paste is always available as a fallback for JS-heavy or login-walled pages.
+              </div>
               <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button
                   className="btn btn-primary btn-sm"
@@ -1760,15 +2054,10 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                 >
                   {reconGenerating ? 'Generating...' : '📊 Extract Signals from Recon Data'}
                 </button>
-                <button className="btn btn-secondary btn-sm" onClick={handlePasteFromClipboard}>
-                  📋 Quick Paste Override
-                </button>
-              </div>
-              {clipboardStatus && (
-                <div style={{ marginTop: 8, fontSize: 11, color: clipboardStatus.startsWith('✅') ? '#10b981' : '#f59e0b' }}>
+                <div style={{ marginTop: 8, fontSize: 11, color: (clipboardStatus || '').startsWith('✅') ? '#10b981' : '#f59e0b' }}>
                   {clipboardStatus}
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Source Queue */}
@@ -2097,7 +2386,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                     <button
                       className="btn btn-primary btn-sm"
                       onClick={handleGenerateStakeholdersFromPeople}
-                      disabled={peopleStakeholderHyps.length === 0 && !company.reconFindings?.peopleSignals?.stakeholderHypotheses?.length}
+                      disabled={manualPeopleText.trim().length === 0 && peopleStakeholderHyps.length === 0 && !company.reconFindings?.peopleSignals?.stakeholderHypotheses?.length}
                     >
                       👥 Create Stakeholder Records from People Intelligence
                     </button>
@@ -2115,10 +2404,10 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                     })}>
                       📋 Copy People Intelligence Brief
                     </button>
-                  </div>
                   <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
                     Source: {peopleSourceMode === 'recon' ? 'Existing recon data' : peopleSourceType.replace(/_/g, ' ')} · {peopleSourceUrl || (peopleSourceMode === 'recon' ? 'Generated from company profile + recon data' : 'No URL provided')}
                   </div>
+                </div>
                 </div>
 
                 {/* Generated Stakeholder Preview */}

@@ -7,7 +7,6 @@
 import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
 import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
 import { extractNamedPeople, extractCompanyFields } from './peopleNameExtractor';
-
 // ─── ID Generator ─────────────────────────────────────────────
 
 let idCounter = 0;
@@ -402,7 +401,6 @@ export function extractEmployeesFromLinkedInText(
       status: 'suggested',
       confidence: 'High',
     });
-
   }
 
   // Bullet-pointed names

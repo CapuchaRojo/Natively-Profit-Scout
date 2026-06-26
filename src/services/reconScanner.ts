@@ -48,6 +48,19 @@ const COMMON_PATHS: { path: string; pageType: string }[] = [
   { path: '/sitemap.xml', pageType: 'Sitemap' },
   { path: '/robots.txt', pageType: 'Robots.txt' },
   { path: '/.well-known/security.txt', pageType: 'Security.txt' },
+  // ── Aggressive Team/People paths (Phase 2) ──
+  { path: '/team', pageType: 'Team Page' },
+  { path: '/our-team', pageType: 'Team Page' },
+  { path: '/leadership', pageType: 'Leadership Page' },
+  { path: '/management', pageType: 'Leadership Page' },
+  { path: '/people', pageType: 'People Page' },
+  { path: '/who-we-are', pageType: 'About / Team Page' },
+  { path: '/staff', pageType: 'Staff Page' },
+  { path: '/executives', pageType: 'Executive Page' },
+  { path: '/founders', pageType: 'Founder Page' },
+  { path: '/open-positions', pageType: 'Careers Page' },
+  { path: '/join-us', pageType: 'Careers Page' },
+  { path: '/work-with-us', pageType: 'Careers Page' },
 ];
 
 // ─── Utility Functions ──────────────────────────────────────────
@@ -258,7 +271,7 @@ export async function fetchWithCorsFallback(url: string): Promise<{
     return { ...result, fetchMethod: 'browser-fetch' };
   }
 
-  // ── 3rd: NinjaPear proxy (last resort, rate-limited) ──
+  // ── 3rd: NinjaPear proxy ──
   if (result.blocked) {
     console.log(`[ReconScanner] Browser fetch blocked, trying NinjaPear proxy for: ${url}`);
     const backendResult = await scanUrlViaBackend(url);
@@ -317,12 +330,6 @@ export async function scanCompanyPublicSurface(
         allDetectedTools.push(...fpResult.detected);
         allDetectedTools.push(...inferToolsFromText(cleanedText, urlInfo.url));
       }
-    } else if (result.blocked) {
-      urlInfo.status = 'blocked';
-      urlInfo.notes = result.error || 'All fetch methods failed. Paste page content manually.';
-    } else {
-      urlInfo.status = 'failed';
-      urlInfo.notes = result.error || 'Fetch failed';
     }
   }
 
@@ -661,4 +668,226 @@ function inferDescription(text: string, pageTexts: { text: string; url: string }
   const sentences = homepageText.match(/[A-Z][^.!?]*[.!?]/g) || [];
   const meaningful = sentences.filter(s => s.length > 30 && s.length < 200);
   return meaningful.length > 0 ? meaningful.slice(0, 2).join(' ') : undefined;
+}
+
+// ============================================================
+// Aggressive Full Recon Orchestrator (Phase 2)
+// Runs all recon engines: team extraction, web search,
+// LinkedIn jobs/company, news intel, social discovery,
+// and stakeholder enrichment.
+// Returns a comprehensive result for the UI to display.
+// ============================================================
+
+import type { ExtractedPerson } from './teamExtractor';
+import type { IntelSignal } from './aggressiveSearchEngine';
+import type { LinkedInJobSignal, LinkedInCompanySignal } from './linkedInPublicEngine';
+import type { Stakeholder } from '../types';
+import type { NewsIntelItem } from './newsIntelEngine';
+import type { SocialFootprint, SocialDiscoveryUrl } from './socialDiscoveryEngine';
+
+export interface AggressiveReconResult {
+  extractedPeople: ExtractedPerson[];
+  searchIntel: { query: string; signals: IntelSignal[] }[];
+  linkedInJobs: LinkedInJobSignal[];
+  linkedInCompany?: LinkedInCompanySignal;
+  newsIntel: NewsIntelItem[];
+  socialFootprint: SocialFootprint;
+  socialDiscoveryUrls: SocialDiscoveryUrl[];
+  generatedStakeholders: Stakeholder[];
+  summary: string;
+  errors: string[];
+}
+
+export async function runFullAggressiveRecon(
+  companyName: string,
+  website: string,
+  options?: {
+    skipLinkedIn?: boolean;
+    skipSearch?: boolean;
+    skipNews?: boolean;
+    skipSocial?: boolean;
+    maxSearchQueries?: number;
+  }
+): Promise<AggressiveReconResult> {
+  const errors: string[] = [];
+  const extractedPeople: ExtractedPerson[] = [];
+  const searchIntel: { query: string; signals: IntelSignal[] }[] = [];
+  let linkedInJobs: LinkedInJobSignal[] = [];
+  let linkedInCompany: LinkedInCompanySignal | undefined;
+  let newsIntel: NewsIntelItem[] = [];
+  let socialFootprint: SocialFootprint = {};
+  let socialDiscoveryUrls: SocialDiscoveryUrl[] = [];
+  let generatedStakeholders: Stakeholder[] = [];
+
+  // Lazy-load engines to avoid circular deps
+  const [
+    { extractPeopleFromHtml },
+    { AGGRESSIVE_SEARCH_QUERIES, processSearchResults },
+    { extractJobsFromLinkedInText, extractCompanyFromLinkedInText },
+    { mapExtractedPeopleToStakeholders },
+    { processNewsSearchResults, NEWS_SEARCH_QUERIES },
+    { discoverSocialFootprint, generateCandidateUrls, mergeWithCandidates },
+  ] = await Promise.all([
+    import('./teamExtractor'),
+    import('./aggressiveSearchEngine'),
+    import('./linkedInPublicEngine'),
+    import('./stakeholderEnricher'),
+    import('./newsIntelEngine'),
+    import('./socialDiscoveryEngine'),
+  ]);
+
+  const {
+    scanTeamPagesViaBackend,
+    searchWebViaBackend,
+    fetchLinkedInJobsViaBackend,
+    fetchLinkedInCompanyViaBackend,
+  } = await import('./reconApiClient');
+
+  // ── Step 1: Scan team pages ──────────────────────────────
+  const baseOrigin = (() => { try { return new URL(website.startsWith('http') ? website : `https://${website}`).origin; } catch { return website; } })();
+  const teamPaths = ['/team', '/our-team', '/leadership', '/management', '/about', '/about-us', '/people', '/staff', '/executives', '/founders'];
+  const teamUrls = teamPaths.map(p => `${baseOrigin}${p}`);
+
+  try {
+    const teamResult = await scanTeamPagesViaBackend(teamUrls);
+    if (teamResult.success && teamResult.pages) {
+      for (const page of teamResult.pages) {
+        if (page.success && page.html) {
+          const people = extractPeopleFromHtml(page.html, page.url);
+          extractedPeople.push(...people);
+        }
+      }
+    } else {
+      // Try individual pages as fallback
+      for (const url of teamUrls.slice(0, 5)) {
+        try {
+          const result = await fetchWithCorsFallback(url);
+          if (result.success && result.html) {
+            const people = extractPeopleFromHtml(result.html, url);
+            extractedPeople.push(...people);
+          }
+        } catch { /* continue */ }
+      }
+    }
+  } catch (err) {
+    errors.push(`Team page scan failed: ${String(err)}`);
+  }
+
+  // ── Step 2: Web search (aggressive signals) ─────────────
+  if (!options?.skipSearch) {
+    const maxQueries = options?.maxSearchQueries || 6;
+    const queries = AGGRESSIVE_SEARCH_QUERIES.slice(0, maxQueries);
+
+    for (const { query } of queries) {
+      try {
+        const q = query.replace('{company}', companyName);
+        const searchResult = await searchWebViaBackend(q, 5);
+        if (searchResult.success && searchResult.results.length > 0) {
+          const intel = processSearchResults(q, searchResult.results, companyName);
+          searchIntel.push({ query: q, signals: intel.signals });
+        }
+      } catch (err) {
+        errors.push(`Search "${query}" failed: ${String(err)}`);
+      }
+    }
+  }
+
+  // ── Step 3: LinkedIn ─────────────────────────────────────
+  if (!options?.skipLinkedIn) {
+    try {
+      const jobsResult = await fetchLinkedInJobsViaBackend(companyName);
+      if (jobsResult.success && jobsResult.data) {
+        linkedInJobs = extractJobsFromLinkedInText(jobsResult.data, companyName);
+      }
+    } catch (err) {
+      errors.push(`LinkedIn jobs fetch failed: ${String(err)}`);
+    }
+
+    try {
+      const companyResult = await fetchLinkedInCompanyViaBackend(companyName);
+      if (companyResult.success && companyResult.data) {
+        linkedInCompany = extractCompanyFromLinkedInText(companyResult.data);
+      }
+    } catch (err) {
+      errors.push(`LinkedIn company fetch failed: ${String(err)}`);
+    }
+  }
+
+  // ── Step 4: News intel (funding, growth, pain signals) ──
+  if (!options?.skipNews) {
+    try {
+      const newsResults = await processNewsSearchResults(
+        searchWebViaBackend,
+        companyName,
+        { maxResultsPerQuery: 5 }
+      );
+      newsIntel = newsResults;
+    } catch (err) {
+      errors.push(`News intel failed: ${String(err)}`);
+    }
+  }
+  // ── Step 5: Social profile discovery ────────────────────
+  if (!options?.skipSocial) {
+    try {
+      const socialResult = await discoverSocialFootprint(
+        companyName,
+        website,
+        searchWebViaBackend,
+        { maxResultsPerQuery: 5 }
+      );
+      socialFootprint = socialResult.footprint;
+      socialDiscoveryUrls = socialResult.discoveredUrls;
+      
+      // Merge with generated candidates for broader coverage
+      const candidates = generateCandidateUrls(companyName, website);
+      socialDiscoveryUrls = mergeWithCandidates(socialDiscoveryUrls, candidates);
+      
+      for (const err of socialResult.errors) {
+        errors.push(`Social discovery: ${err}`);
+      }
+    } catch (err) {
+      errors.push(`Social discovery failed: ${String(err)}`);
+      // Generate at least candidate URLs
+      socialDiscoveryUrls = generateCandidateUrls(companyName, website);
+    }
+  }
+
+  // ── Step 6: Generate stakeholders ───────────────────────
+  if (extractedPeople.length > 0) {
+    const result = mapExtractedPeopleToStakeholders(extractedPeople, []);
+    generatedStakeholders = result.stakeholders;
+  }
+
+  // ── Build summary ────────────────────────────────────────
+  const allSignals = searchIntel.flatMap(s => s.signals);
+  const uniqueSignalTypes = new Set(allSignals.map(s => s.type));
+
+  const summaryParts: string[] = [];
+  if (extractedPeople.length > 0) summaryParts.push(`${extractedPeople.length} people extracted from team pages`);
+  if (allSignals.length > 0) summaryParts.push(`${allSignals.length} intel signals (${uniqueSignalTypes.size} types)`);
+  if (linkedInJobs.length > 0) summaryParts.push(`${linkedInJobs.length} LinkedIn job postings`);
+  if (linkedInCompany?.description) summaryParts.push('LinkedIn company profile captured');
+  if (newsIntel.length > 0) {
+    const newsSignals = newsIntel.flatMap(n => n.signals);
+    summaryParts.push(`${newsSignals.length} news-driven signals (${newsIntel.length} articles)`);
+  }
+  if (Object.keys(socialFootprint).length > 0) summaryParts.push(`${Object.keys(socialFootprint).length} social profiles discovered`);
+  if (generatedStakeholders.length > 0) summaryParts.push(`${generatedStakeholders.length} stakeholder records generated`);
+
+  const summary = summaryParts.length > 0
+    ? `Aggressive recon complete: ${summaryParts.join('; ')}.`
+    : 'Aggressive recon found limited data — try manual paste for additional sources.';
+
+  return {
+    extractedPeople,
+    searchIntel,
+    linkedInJobs,
+    linkedInCompany,
+    newsIntel,
+    socialFootprint,
+    socialDiscoveryUrls,
+    generatedStakeholders,
+    summary,
+    errors,
+  };
 }

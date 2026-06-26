@@ -6,7 +6,7 @@
 
 import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
 import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
-
+import { extractNamedPeople, extractCompanyFields } from './peopleNameExtractor';
 // ─── ID Generator ─────────────────────────────────────────────
 
 let idCounter = 0;
@@ -364,53 +364,60 @@ export function extractEmployeesFromLinkedInText(
   companyName: string
 ): DiscoveredEmployee[] {
   const employees: DiscoveredEmployee[] = [];
-  const lines = text.split('\n');
   const seen = new Set<string>();
 
-  // Look for patterns like "Name — Role" or "Name | Role" or "Name, Role"
+  // ── Use v0.7 improved name extractor first ──
+  const namedPeople = extractNamedPeople(text);
+  for (const np of namedPeople) {
+    if (!seen.has(np.name.toLowerCase())) {
+      seen.add(np.name.toLowerCase());
+      employees.push({
+        id: uid('emp'),
+        name: np.name,
+        role: np.role,
+        department: np.department || inferDepartmentFromRole(np.role || ''),
+        source: 'linkedin_employee_profile',
+        status: 'suggested',
+        confidence: np.confidence,
+      });
+    }
+  }
+
+  // ── Fallback: original regex-based extraction for missed names ──
+  const lines = text.split('\n');
   const nameRolePattern = /([A-Z][a-z]+\s+[A-Z][a-z]+)\s*[|\-–—,]+\s*([A-Za-z][A-Za-z\s\/]+)/g;
   let match;
   while ((match = nameRolePattern.exec(text)) !== null) {
     const name = match[1].trim();
     const role = match[2].trim();
-
-    // Gate 1: Must be a likely person name (first-name dict check)
     if (!isLikelyPersonName(name)) continue;
-
-    // Gate 2: Role must contain a known role keyword
     if (!hasRoleKeywordNearby(role)) continue;
-
-    if (!seen.has(name) && name.length > 3) {
-      seen.add(name);
-      employees.push({
-        id: uid('emp'),
-        name,
-        role,
-        department: inferDepartmentFromRole(role),
-        source: 'linkedin_employee_profile',
-        status: 'suggested',
-        confidence: 'High',
-      });
-    }
+    if (seen.has(name.toLowerCase()) || name.length <= 3) continue;
+    seen.add(name.toLowerCase());
+    employees.push({
+      id: uid('emp'), name, role,
+      department: inferDepartmentFromRole(role),
+      source: 'linkedin_employee_profile',
+      status: 'suggested',
+      confidence: 'High',
+    });
   }
 
-  // Look for bullet-pointed names (common on LinkedIn)
+  // Bullet-pointed names
   const bulletPattern = /[•\-]\s*([A-Z][a-z]+\s+[A-Z][a-z]+)/g;
   while ((match = bulletPattern.exec(text)) !== null) {
     const name = match[1].trim();
-    if (!seen.has(name) && isLikelyPersonName(name) && name.length > 3) {
-      // Check if a role keyword appears nearby in the same line
-      const lineIdx = lines.findIndex(l => l.includes(name));
-      if (lineIdx >= 0 && hasRoleKeywordNearby(lines[lineIdx])) {
-        seen.add(name);
-        employees.push({
-          id: uid('emp'),
-          name,
-          source: 'linkedin_employee_profile',
-          status: 'suggested',
-          confidence: 'Low',
-        });
-      }
+    if (seen.has(name.toLowerCase())) continue;
+    if (!isLikelyPersonName(name) || name.length <= 3) continue;
+    const lineIdx = lines.findIndex(l => l.includes(name));
+    if (lineIdx >= 0 && hasRoleKeywordNearby(lines[lineIdx])) {
+      seen.add(name.toLowerCase());
+      employees.push({
+        id: uid('emp'), name,
+        source: 'linkedin_employee_profile',
+        status: 'suggested',
+        confidence: 'Low',
+      });
     }
   }
 

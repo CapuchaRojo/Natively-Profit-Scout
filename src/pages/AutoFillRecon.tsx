@@ -18,6 +18,8 @@ import {
   generateAutoFillSuggestions, generateReconOpenings,
 } from '../services/reconScanner';
 import { analyzePeopleText } from '../services/peopleSignalEngine';
+import { getSourceQualitySummary } from '../services/contentQuality';
+import { extractNamedPeople } from '../services/peopleNameExtractor';
 import {
   discoverPeopleSources, generatePreliminaryPeopleSignals,
   discoverLinkedInEmployees, discoverLinkedInPosts,
@@ -269,8 +271,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
 
-  // ─── Step 2: Fetch & Analyze ────────────────────────────────
-
   const handleFetchAndAnalyze = async () => {
     setScanStatus('fetching');
     setScanError('');
@@ -281,30 +281,40 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const localDetected: DetectedTool[] = [];
     const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
+
+    // Lazy-import content quality
+    const { classifyFetchResult, classifySourceWeight, cleanContentForInference, shouldExcludeFromInference, shouldSuppressWorkflowInference } = await import('../services/contentQuality');
+
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
       const result = await fetchWithCorsFallback(urlInfo.url);
-      if (result.success && result.html) {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId
-            ? { ...u, status: 'scanned', fetchedText: (result.text || '').slice(0, settings.maxCharsPerPage), fetchSourceType: 'browser-fetch' }
-            : u
-        );
-        allPageTexts.push({ text: result.text || '', url: urlInfo.url, html: result.html });
+
+      // Use content quality classifier
+      const classification = classifyFetchResult(urlInfo.url, result.html, result.text, result.httpStatus, result.error, result.blocked);
+      const sourceWeight = classifySourceWeight(urlInfo.pageType, classification.status, result.fetchMethod);
+
+      updatedUrls = updatedUrls.map(u =>
+        u.urlId === urlInfo.urlId ? {
+          ...u,
+          status: classification.status,
+          notes: classification.notes,
+          httpStatus: classification.httpStatus,
+          contentLength: classification.contentLength,
+          sourceWeight,
+          fetchedText: result.success ? (result.text || '').slice(0, settings.maxCharsPerPage) : u.fetchedText,
+          fetchSourceType: result.fetchMethod || u.fetchSourceType,
+        } : u
+      );
+
+      if (result.success && result.html && !shouldExcludeFromInference(classification.status, sourceWeight)) {
+        const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
+        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html });
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
-          localDetected.push(...inferToolsFromText(result.text || '', urlInfo.url));
+          localDetected.push(...inferToolsFromText(cleanedText, urlInfo.url));
         }
-      } else if (result.blocked) {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId ? { ...u, status: 'blocked', notes: result.error || 'Blocked' } : u
-        );
-      } else {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId ? { ...u, status: 'failed', notes: result.error || 'Failed' } : u
-        );
       }
       if (i < urlsToScan.length - 1) {
         await new Promise(r => setTimeout(r, settings.scanDelayMs));
@@ -790,6 +800,113 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       brief.push('No recon data available yet. Run URL discovery or generate People Signals first.');
       brief.push('');
     }
+
+    return brief.join('\n');
+  };
+
+  const generateSalesBriefText = (): string => {
+    const brief: string[] = [
+      `📋 PRE-CALL BRIEF: ${company.basic.name}`,
+      '='.repeat(55),
+      '',
+      `Prepared: ${new Date().toLocaleDateString()}`,
+      `Industry: ${company.basic.industry || 'Unknown'}`,
+      `Website: ${company.basic.website || 'N/A'}`,
+      `Location: ${company.basic.location || 'Unknown'}`,
+      '',
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    ];
+
+    // Company Overview
+    brief.push('');
+    brief.push('🏢 COMPANY OVERVIEW');
+    brief.push(`  ${company.business.productsServices || company.basic.name + ' — details to be discovered.'}`);
+    if (company.business.targetCustomers) {
+      brief.push(`  Target: ${company.business.targetCustomers}`);
+    }
+
+    // Key People / Stakeholders
+    if (hasPeopleSignals || company.stakeholders.length > 0) {
+      brief.push('');
+      brief.push('👥 KEY PEOPLE');
+      if (peopleRoleMap.length > 0) {
+        peopleRoleMap.slice(0, 5).forEach(r => {
+          brief.push(`  ${r.roleTitle} (${r.department}) [${r.confidence}]`);
+        });
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('  Stakeholder Hypotheses:');
+        peopleStakeholderHyps.slice(0, 5).forEach(h => {
+          brief.push(`    ${h.roleTitle} — ${h.likelyConcern.slice(0, 80)}`);
+          brief.push(`    ❓ ${h.likelyDiscoveryQuestion}`);
+        });
+      }
+      if (company.stakeholders.length > 0) {
+        brief.push(`  ${company.stakeholders.length} stakeholder records in profile`);
+      }
+    }
+
+    // Tools & Tech Stack
+    if (detectedTools.length > 0) {
+      brief.push('');
+      brief.push('🔧 TECH STACK');
+      detectedTools.slice(0, 8).forEach(t => {
+        brief.push(`  ${t.toolName} (${t.category}) [${t.confidence}]`);
+      });
+    }
+
+    // Pain Points / Workflows
+    if (inferredWorkflows.length > 0) {
+      brief.push('');
+      brief.push('⚠️ LIKELY PAIN POINTS');
+      inferredWorkflows.slice(0, 5).forEach(w => {
+        brief.push(`  ${w.workflowName} (${w.department})`);
+        brief.push(`    Bottleneck: ${w.possibleBottleneck}`);
+        brief.push(`    ❓ ${w.discoveryQuestion}`);
+      });
+    }
+
+    // Openings
+    if (openings.length > 0) {
+      brief.push('');
+      brief.push('🎯 TOP OPENINGS');
+      openings.slice(0, 5).forEach((o, i) => {
+        brief.push(`  ${i + 1}. ${o.title}`);
+        brief.push(`     First Line: ${o.firstLine}`);
+        brief.push(`     ❓ ${o.discoveryQuestion}`);
+      });
+    }
+
+    // Hiring Signals
+    if (peopleHiringSignals.length > 0) {
+      brief.push('');
+      brief.push('📋 HIRING SIGNALS');
+      peopleHiringSignals.slice(0, 5).forEach(h => {
+        brief.push(`  ${h.openRole || h.roleGap} (${h.department})`);
+      });
+    }
+
+    // Discovery Questions summary
+    if (peopleDiscoveryQuestions.length > 0) {
+      brief.push('');
+      brief.push('❓ DISCOVERY QUESTIONS');
+      peopleDiscoveryQuestions.slice(0, 5).forEach(q => {
+        brief.push(`  [${q.targetRole}] ${q.question}`);
+      });
+    }
+
+    // Suggested Demo
+    const prompt = openings.find(o => o.suggestedBuildPrompt);
+    if (prompt) {
+      brief.push('');
+      brief.push('🛠️ SUGGESTED DEMO');
+      brief.push(`  ${prompt.suggestedBuildPrompt}`);
+    }
+
+    brief.push('');
+    brief.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    brief.push('Generated by Natively Profit Scout — Auto-Fill Recon');
 
     return brief.join('\n');
   };
@@ -2097,6 +2214,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                   </button>
                   <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('CRM-Ready Brief', generateCrmBriefText)}>
                     📋 CRM-Ready Brief
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Sales Call Brief', generateSalesBriefText)}>
+                    📞 Sales Call Brief
                   </button>
                   <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('First Outreach Lines', () => {
                     return openings.map(o =>

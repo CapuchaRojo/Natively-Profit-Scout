@@ -79,6 +79,9 @@ export const techFlowSolutions: Company = {
   crmExport: undefined,
   createdAt: now,
   updatedAt: now,
+  publicIntelSources: [],
+  publicIntelSignals: [],
+  publicIntelOpenings: [],
   isSample: true,
 };
 
@@ -156,6 +159,9 @@ export const brightPathConsulting: Company = {
   crmExport: undefined,
   createdAt: now,
   updatedAt: now,
+  publicIntelSources: [],
+  publicIntelSignals: [],
+  publicIntelOpenings: [],
   isSample: true,
 };
 
@@ -233,6 +239,9 @@ export const greenLeafLandscaping: Company = {
   crmExport: undefined,
   createdAt: now,
   updatedAt: now,
+  publicIntelSources: [],
+  publicIntelSignals: [],
+  publicIntelOpenings: [],
   isSample: true,
 };
 
@@ -296,6 +305,9 @@ export const aStormIsComing: Company = {
   crmExport: undefined,
   createdAt: now,
   updatedAt: now,
+  publicIntelSources: [],
+  publicIntelSignals: [],
+  publicIntelOpenings: [],
   isSample: true,
 };
 

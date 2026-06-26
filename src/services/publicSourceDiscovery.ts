@@ -7,7 +7,6 @@
 import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
 import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
 import { extractNamedPeople, extractCompanyFields } from './peopleNameExtractor';
-
 // ─── ID Generator ─────────────────────────────────────────────
 
 let idCounter = 0;
@@ -402,7 +401,6 @@ export function extractEmployeesFromLinkedInText(
       status: 'suggested',
       confidence: 'High',
     });
-
   }
 
   // Bullet-pointed names
@@ -443,7 +441,7 @@ export function extractStakeholderMentions(text: string): StakeholderMention[] {
   const lines = text.split('\n');
 
   // Pattern 1: "Name is/was/joined as Role"
-  const pattern1 = /([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+(?:the\s+)?|\s+joined\s+(?:as\s+(?:the\s+)?)?|\s+serves\s+(?:as\s+(?:the\s+)?)?|\s+as\s+(?:the\s+)?)([A-Za-z][A-Za-z\s,]+?(?:Officer|Director|Manager|Lead|President|Chief|Head|VP|Vice|Executive|Architect|Engineer|Consultant|Specialist|Analyst|Coordinator|Administrator|Supervisor|Partner|Founder|Advisor|Representative))\b/g;
+  const pattern1 = /([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+(?:the\s+)?|\s+joined\s+(?:as\s+(?:the\s+)?)?|\s+serves\s+(?:as\s+(?:the\s+)?)?|\s+as\s+(?:the\s+)?)([A-Za-z][A-Za-z\s,]+?(?:Officer|Director|Manager|Lead|President|Chief|Head|VP|Vice|Executive|Architect|Engineer|Consultant|Specialist|Analyst|Coordinator|Administrator|Supervisor|Partner|Founder|Advisor|Representative))\b/;
   let match;
   while ((match = pattern1.exec(text)) !== null) {
     const name = match[1].trim();

@@ -25,6 +25,3 @@ dist-ssr
 
 # TypeScript build cache
 *.tsbuildinfo
-
-# TypeScript build cache
-*.tsbuildinfo

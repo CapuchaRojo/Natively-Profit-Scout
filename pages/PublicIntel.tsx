@@ -4,6 +4,7 @@
 // ============================================================
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { fetchLinkedInCompanyViaBackend } from '../services/reconApiClient';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { ConfidenceBadge } from '../components/ConfidenceBadge';
@@ -13,6 +14,7 @@ import {
   fetchPublicPageText, createPublicIntelSource,
   analyzePublicText, generateOpeningsFromSignals,
   extractToolMentions, extractStakeholderMentions,
+  cleanHtmlToText,
 } from '../services/publicIntelEngine';
 import type {
   PublicIntelSource, PublicIntelSignal, PublicIntelOpening,
@@ -67,6 +69,8 @@ export default function PublicIntelPage() {
   const [fetching, setFetching] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [fetchingLinkedIn, setFetchingLinkedIn] = useState(false);
+  const [linkedInFetchError, setLinkedInFetchError] = useState<string | null>(null);
 
   const company = companies.find(c => c.id === selectedCompanyId);
   const sources = company?.publicIntelSources || [];
@@ -538,6 +542,100 @@ export default function PublicIntelPage() {
 
           {tab === 'linkedin' && (
             <div>
+              {/* NEW: Fetch LinkedIn Company Page via Edge Function */}
+              <div className="card mb-4" style={{ borderColor: '#3b82f6' }}>
+                <div className="card-header">
+                  <span className="input-label" style={{ margin: 0 }}>🔗 Auto-Fetch LinkedIn Company Page</span>
+                  <span style={{ fontSize: 11, color: '#64748b' }}>
+                    Fetches publicly accessible LinkedIn company page via proxy
+                  </span>
+                </div>
+                <div className="card-body">
+                  <div className="badge badge-blue" style={{ marginBottom: 12, fontSize: 10 }}>
+                    🔒 Uses edge function proxy — fetches publicly accessible LinkedIn HTML
+                  </div>
+                  <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
+                    Fetches the LinkedIn company page for <strong>{company.basic.name}</strong> via the Natively proxy.
+                    The raw HTML is cleaned to text and added as a LinkedIn source ready for analysis.
+                    This uses LinkedIn's public-facing pages and does not bypass authentication.
+                  </p>
+
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        if (!company) return;
+                        setFetchingLinkedIn(true);
+                        setLinkedInFetchError(null);
+                        try {
+                          const result = await fetchLinkedInCompanyViaBackend(company.basic.name);
+                          if (!result.success || !result.data) {
+                            setLinkedInFetchError(result.message || 'Failed to fetch LinkedIn company page.');
+                            showToast('❌ ' + (result.message || 'LinkedIn fetch failed'));
+                          } else {
+                            // Clean the HTML to plain text
+                            const cleanedText = cleanHtmlToText(result.data);
+                            if (!cleanedText || cleanedText.length < 20) {
+                              setLinkedInFetchError('Page returned too little text. The company may not have a LinkedIn page or it may be inaccessible.');
+                              showToast('⚠️ LinkedIn page returned insufficient text');
+                            } else {
+                              // Create a source and add it
+                              const source = createPublicIntelSource(
+                                company.id,
+                                'linkedin_notes',
+                                `https://www.linkedin.com/company/${company.basic.name.toLowerCase().replace(/\s+/g, '-')}/`,
+                                `LinkedIn Company Page — ${company.basic.name}`,
+                                cleanedText,
+                                'Auto-fetched via Natively proxy from public LinkedIn company page'
+                              );
+                              addPublicIntelSource(company.id, { ...source, status: 'fetched' as SourceStatus });
+                              showToast(`✅ Fetched LinkedIn page — ${cleanedText.length.toLocaleString()} chars ready for analysis`);
+                            }
+                          }
+                        } catch (err: any) {
+                          setLinkedInFetchError(err?.message || 'Unknown error');
+                          showToast('❌ ' + (err?.message || 'LinkedIn fetch error'));
+                        } finally {
+                          setFetchingLinkedIn(false);
+                        }
+                      }}
+                      disabled={fetchingLinkedIn}
+                    >
+                      {fetchingLinkedIn ? '⏳ Fetching LinkedIn page...' : `🔗 Fetch LinkedIn Page for ${company.basic.name}`}
+                    </button>
+                    <span style={{ fontSize: 11, color: '#64748b' }}>
+                      May take 5-15 seconds
+                    </span>
+                  </div>
+
+                  {fetchingLinkedIn && (
+                    <div style={{
+                      marginTop: 12, padding: 12, textAlign: 'center',
+                      background: 'rgba(59,130,246,0.06)', borderRadius: 6,
+                      fontSize: 12, color: '#94a3b8',
+                    }}>
+                      <div style={{ fontSize: 20, marginBottom: 4 }}>⏳</div>
+                      Fetching LinkedIn company page for {company.basic.name} via proxy...
+                      <div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>
+                        This may take 5-15 seconds. The proxy is fetching and cleaning the page.
+                      </div>
+                    </div>
+                  )}
+
+                  {linkedInFetchError && !fetchingLinkedIn && (
+                    <div style={{
+                      marginTop: 12, padding: '8px 12px',
+                      background: 'rgba(239,68,68,0.08)', borderRadius: 6,
+                      border: '1px solid rgba(239,68,68,0.2)',
+                      fontSize: 12, color: '#ef4444',
+                    }}>
+                      ⚠️ {linkedInFetchError}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Manual LinkedIn Notes section */}
               <div className="card mb-4" style={{ borderColor: '#8b5cf6' }}>
                 <div className="card-body">
                   <div className="badge badge-purple" style={{ marginBottom: 12, fontSize: 10 }}>
@@ -605,8 +703,7 @@ export default function PublicIntelPage() {
               )}
             </div>
           )}
-          {toast && <div className="toast">{toast}</div>}
-        </div>
+    </div>
       )}
     </div>
   );

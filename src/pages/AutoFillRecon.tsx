@@ -37,10 +37,67 @@ import type {
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
   PeopleSourceQueueItem, PeopleSourceQueueStatus,
-  DiscoveredEmployee, LinkedInPostSignal,
+  DiscoveredEmployee, LinkedInPostSignal, SourceWeight,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
+type ReconUrlStatus = ReconDiscoveredUrl['status'];
+
+const pasteRecoverableStatuses = new Set<ReconUrlStatus>([
+  'blocked',
+  'failed',
+  'unscanned',
+  'analyzing',
+  'blocked_by_proxy',
+  'login_walled',
+  'app_shell_or_empty',
+  'manual_paste_needed',
+  'not_found_404',
+]);
+
+const pasteStatusCopy: Partial<Record<ReconUrlStatus, { title: string; body: string; placeholder: string; rows: number }>> = {
+  blocked: {
+    title: 'Fetch blocked - paste visible content',
+    body: "Automatic fetch could not access this page. Paste the visible page content below and we'll analyze it the same way.",
+    placeholder: 'Paste the visible text from this page here...',
+    rows: 5,
+  },
+  blocked_by_proxy: {
+    title: 'Proxy blocked - paste visible content',
+    body: "The proxy could not retrieve this page. If it opens in your browser, paste the visible content below.",
+    placeholder: 'Paste browser-visible page text here...',
+    rows: 5,
+  },
+  login_walled: {
+    title: 'Login-walled page - paste visible content',
+    body: "This page appears to require authentication. Paste any visible public content below and we'll analyze it the same way.",
+    placeholder: 'Paste visible login-walled page text here...',
+    rows: 5,
+  },
+  app_shell_or_empty: {
+    title: 'JS-rendered or empty page - paste visible content',
+    body: "The fetched page did not include readable content. Paste the visible page text below if it renders in your browser.",
+    placeholder: 'Paste rendered page text here...',
+    rows: 5,
+  },
+  manual_paste_needed: {
+    title: 'Manual paste needed',
+    body: "Automatic fetch needs help for this source. Paste the relevant page content below.",
+    placeholder: 'Paste relevant page text here...',
+    rows: 5,
+  },
+  not_found_404: {
+    title: 'Page not found - paste if you can access it',
+    body: "Automatic fetch saw a 404/not-found response. Paste content only if the page is available to you in a browser.",
+    placeholder: 'Paste page text here if the URL works in your browser...',
+    rows: 3,
+  },
+};
+
+const getPastePrompt = (status: ReconUrlStatus) => pasteStatusCopy[status] || {
+  placeholder: 'Or paste page text here if automatic fetch fails...',
+  rows: 3,
+};
 
 export default function AutoFillReconPage() {
   const { id } = useParams();
@@ -378,7 +435,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const urlsToScan = discoveredUrls.filter(u => u.status === 'unscanned').slice(0, settings.maxPagesPerScan);
 
     const localDetected: DetectedTool[] = [];
-    const allPageTexts: { text: string; url: string; html?: string }[] = [];
+    const allPageTexts: { text: string; url: string; html?: string; sourceWeight?: SourceWeight }[] = [];
     let updatedUrls = [...discoveredUrls];
 
     // Lazy-import content quality
@@ -388,7 +445,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
       const result = await fetchWithCorsFallback(urlInfo.url);
-
       // Use content quality classifier
       const classification = classifyFetchResult(urlInfo.url, result.html, result.text, result.httpStatus, result.error, result.blocked);
       const sourceWeight = classifySourceWeight(urlInfo.pageType, classification.status, result.fetchMethod);
@@ -408,7 +464,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
       if (result.success && result.html && !shouldExcludeFromInference(classification.status, sourceWeight)) {
         const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
-        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html });
+        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html, sourceWeight });
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
@@ -423,7 +479,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
     for (const urlInfo of pastedUrls) {
       if (urlInfo.fetchedText) {
-        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
+        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight || 'high_signal' });
         if (settings.enableToolFingerprinting) {
           const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...inferToolsFromText(urlInfo.fetchedText, urlInfo.url));
@@ -449,6 +505,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
+        if (page.sourceWeight && shouldSuppressWorkflowInference(page.sourceWeight)) continue;
         for (const w of inferWorkflowsFromText(page.text, page.url, localTools)) {
           const existing = wfMap.get(w.workflowName);
           if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);
@@ -1535,9 +1592,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                               {urlInfo.status}
                             </span>
                           </div>
-                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned' || urlInfo.status === 'analyzing') && (
+                          {pasteRecoverableStatuses.has(urlInfo.status) && (
                             <div style={{ marginTop: 4 }}>
-                              {urlInfo.status === 'blocked' && (
+                              {pasteStatusCopy[urlInfo.status] && (
                                 <div style={{
                                   padding: '8px 10px',
                                   background: 'rgba(245, 158, 11, 0.08)',
@@ -1547,10 +1604,10 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                                   fontSize: 11,
                                 }}>
                                   <div style={{ color: '#f59e0b', fontWeight: 600, marginBottom: 4 }}>
-                                    ⚠️ Login-walled page — couldn't fetch automatically
+                                    {pasteStatusCopy[urlInfo.status]?.title}
                                   </div>
                                   <div style={{ color: '#e2e8f0', fontSize: 11 }}>
-                                    This page requires authentication. Paste the visible page content below — we'll analyze it the same way.
+                                    {pasteStatusCopy[urlInfo.status]?.body}
                                   </div>
                                 </div>
                               )}
@@ -1571,11 +1628,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                               {urlInfo.status !== 'analyzing' && (
                                 <textarea
                                   className="input"
-                                  placeholder={urlInfo.status === 'blocked'
-                                    ? 'Paste the visible text from this page here...'
-                                    : 'Or paste page text here if automatic fetch fails...'
-                                  }
-                                  rows={urlInfo.status === 'blocked' ? 5 : 3}
+                                  placeholder={getPastePrompt(urlInfo.status).placeholder}
+                                  rows={getPastePrompt(urlInfo.status).rows}
                                   style={{ fontSize: 11 }}
                                   onBlur={e => {
                                     const val = e.target.value.trim();

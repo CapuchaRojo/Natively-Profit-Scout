@@ -229,7 +229,24 @@ export async function fetchPublicUrl(url: string): Promise<{
   } catch (err: unknown) {
     const error = err as Error;
     if (error.name === 'AbortError') return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
-    return { success: false, error: 'Local fetch failed — retrying via proxy', blocked: true };
+    const isCors = error.message?.includes('Failed to fetch') ||
+                   error.message?.includes('NetworkError') ||
+                   error.name === 'TypeError' ||
+                   error.message?.includes('CORS');
+
+    if (isCors) {
+      return {
+        success: false,
+        error: 'Local fetch failed — retrying via proxy',
+        blocked: true,
+      };
+    }
+
+    if (error.name === 'AbortError') {
+      return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
+    }
+
+    return { success: false, error: error.message || 'Unknown error', blocked: false };
   }
 }
 
@@ -304,6 +321,7 @@ export async function scanCompanyPublicSurface(
       urlInfo.fetchedText = (result.text || '').slice(0, settings.maxCharsPerPage);
       urlInfo.fetchSourceType = result.fetchMethod || 'browser-fetch';
       const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
+
       fetchedPages.push({ url: urlInfo.url, html: result.html, text: result.text || '' });
       allTexts.push({ text: cleanedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight });
 

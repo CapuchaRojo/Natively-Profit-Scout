@@ -79,8 +79,9 @@ export type AccessStatus =
   | 'contacted'
   | 'meeting_booked'
   | 'champion'
-  | 'blocker';
-
+  | 'blocker'
+  | 'researchable'
+  | 'email_known';
 export type StakeholderCategory =
   | 'economic_buyer'
   | 'technical_buyer'
@@ -507,12 +508,23 @@ export interface ReconDiscoveredUrl {
   url: string;
   pageType: string;
   discoveryMethod: 'homepage-link' | 'common-path' | 'sitemap' | 'user-added';
-  status: 'unscanned' | 'scanned' | 'failed' | 'blocked' | 'pasted';
+  status: 'unscanned' | 'scanned' | 'failed' | 'blocked' | 'pasted' | 'analyzing'
+    | 'blocked_by_proxy' | 'login_walled' | 'not_found_404' | 'app_shell_or_empty'
+    | 'manual_paste_needed';
   confidence: ConfidenceLevel;
   notes: string;
   fetchedText?: string;
-  fetchSourceType?: 'browser-fetch' | 'pasted-public-page';
+  fetchSourceType?: 'browser-fetch' | 'pasted-public-page' | 'edge-function' | 'ninjapear-proxy';
+  httpStatus?: number;
+  contentLength?: number;
+  sourceWeight?: SourceWeight;
 }
+
+export type SourceWeight = 'high_signal' | 'medium_signal' | 'low_signal' | 'noise';
+
+export type FetchStatus = 'unscanned' | 'scanned' | 'failed' | 'blocked' | 'pasted' | 'analyzing'
+  | 'blocked_by_proxy' | 'login_walled' | 'not_found_404' | 'app_shell_or_empty'
+  | 'manual_paste_needed';
 
 export interface DetectedTool {
   toolName: string;
@@ -737,4 +749,38 @@ export interface LinkedInPostSignal {
   opportunityHints: string[];
   confidence: ConfidenceLevel;
   pastedText?: string;
+}
+
+// ============================================================
+// Sales Brief Type (v0.7)
+// ============================================================
+
+export interface SalesBrief {
+  companyName: string;
+  generatedAt: string;
+  companySummary: string;
+  keySignals: string[];
+  possibleBottlenecks: string[];
+  suggestedNativelyUseCase: string;
+  suggestedFirstMessage: string;
+  stakeholders: { name?: string; role: string; buyerType: string; priority: string }[];
+  discoveryQuestions: string[];
+  hubspotNoteFormat: string;
+  recommendedNextAction: string;
+  openings: { title: string; firstLine: string; discoveryQ: string; demoAngle: string; builderIdea: string }[];
+  sourceBreakdown: { highSignal: number; mediumSignal: number; lowSignal: number; noise: number };
+}
+
+// ============================================================
+// Named Person Type (v0.7)
+// ============================================================
+
+export interface NamedPerson {
+  name: string;
+  role?: string;
+  department?: string;
+  confidence: ConfidenceLevel;
+  evidence: string;
+  source: string;
+  buyerType?: 'economic_buyer' | 'technical_buyer' | 'influencer' | 'champion' | 'operator';
 }

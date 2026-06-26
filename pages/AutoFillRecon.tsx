@@ -1,12 +1,17 @@
 // ============================================================
-// Auto-Fill Recon Page — v0.3
+// Auto-Fill Recon Page — v0.4
 // Public web intelligence collector + auto-fill
+// Enhanced with ChatGPT JSON import, progress bar, toast notifications
 // ============================================================
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
+import { useToast, useCopyWithToast } from '../components/Toast';
+import { ReconProgressBar } from '../components/recon/ReconProgressBar';
+import { ChatGptJsonPaste } from '../components/recon/ChatGptJsonPaste';
+import { LinkedInSourceAssistant } from '../components/recon/LinkedInSourceAssistant';
 import {
   discoverPublicUrls, fetchPublicUrl,
   applyReconFindingsToCompany,
@@ -19,7 +24,7 @@ import {
   analyzeLinkedInPostText, extractEmployeesFromLinkedInText,
 } from '../services/publicSourceDiscovery';
 import type {
-  Company, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
+  Company, CompanyPeople, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
   ConfidenceLevel, PeopleSignalSourceType,
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
@@ -33,10 +38,12 @@ type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openi
 export default function AutoFillReconPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { showToast } = useToast();
+  const { copyToClipboard } = useCopyWithToast();
+
   const { state, getCompany, updateCompany } = useApp();
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
-
 const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [homepageUrl, setHomepageUrl] = useState(company?.basic.website || '');
   const [discoveredUrls, setDiscoveredUrls] = useState<ReconDiscoveredUrl[]>([]);
@@ -70,9 +77,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [stakeholderGenMessage, setStakeholderGenMessage] = useState<string | null>(null);
   const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
 
-  // Stakeholder preview, copy feedback, CRM brief
   const [generatedStakeholders, setGeneratedStakeholders] = useState<Stakeholder[]>([]);
-  const [copyFeedback, setCopyFeedback] = useState<{ label: string; message: string; type: 'success' | 'error' } | null>(null);
   const [showBriefPreview, setShowBriefPreview] = useState(false);
   const [briefText, setBriefText] = useState('');
   // Restore recon state from company on mount
@@ -434,8 +439,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     });
   };
 
-  // ─── People Signal Handlers ───────────────────────────────────
+  // ─── LinkedIn Source Assistant Handler ─────────────────────
 
+  const handleLinkedInAutoFill = (peopleUpdates: Partial<CompanyPeople>) => {
+    updateCompany(company.id, {
+      people: { ...company.people, ...peopleUpdates },
+    });
+    showToast('✅ LinkedIn data applied to Company Profile', 'success');
+  };
+
+  // ─── People Signal Handlers ───────────────────────────────────
   const handleAnalyzePeopleText = () => {
     const text = manualPeopleText.trim();
     if (!text) return;
@@ -689,16 +702,14 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const handleCopyToClipboard = async (label: string, textBuilder: () => string) => {
     try {
       const text = textBuilder();
-      await navigator.clipboard.writeText(text);
-      setCopyFeedback({ label, message: `✅ Copied ${label} to clipboard`, type: 'success' });
+      await copyToClipboard(text);
       if (label === 'CRM-Ready Brief') {
         setBriefText(text);
         setShowBriefPreview(true);
       }
     } catch {
-      setCopyFeedback({ label, message: `❌ Clipboard copy failed — please try again or manually select the text`, type: 'error' });
+      showToast(`❌ Copy failed — ${label}`, 'error');
     }
-    setTimeout(() => setCopyFeedback(null), 4000);
   };
 
   // ─── People Source Discovery Handlers (v0.5) ──────────────────
@@ -835,7 +846,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       item.id === id ? { ...item, status, ...(pastedText !== undefined ? { pastedText } : {}) } : item
     ));
   };
-
   const tabs: { key: Tab; label: string; icon: string }[] = [
     { key: 'discover', label: '1. Discover', icon: '🔗' },
     { key: 'fetch', label: '2. Fetch', icon: '📡' },
@@ -855,6 +865,41 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     peopleOutreachAngles.length > 0 ||
     peopleDiscoveryQuestions.length > 0;
 
+  // Determine which steps are completed
+  const completedSteps: string[] = [];
+  if (discoveredUrls.length > 0) completedSteps.push('discover');
+  if (discoveredUrls.some(u => u.status === 'scanned' || u.status === 'pasted') || scanStatus === 'done') completedSteps.push('fetch');
+  if (detectedTools.length > 0 || inferredWorkflows.length > 0) completedSteps.push('analyze');
+  if (hasPeopleSignals) completedSteps.push('people');
+  if (company.reconFindings?.status === 'applied') completedSteps.push('apply');
+
+  // Map active tab to the progress step
+  const activeStep = activeTab === 'tools' || activeTab === 'workflows' || activeTab === 'suggestions' || activeTab === 'openings'
+    ? 'analyze' : activeTab;
+
+  const handleChatGptJsonParsed = (data: PeopleSignals) => {
+    setPeopleRoleMap(data.roleMap);
+    setPeopleStakeholderHyps(data.stakeholderHypotheses);
+    setPeopleHiringSignals(data.hiringSignals);
+    setPeopleMilestoneSignals(data.milestoneSignals);
+    setPeopleOutreachAngles(data.outreachAngles);
+    setPeopleDiscoveryQuestions(data.discoveryQuestions);
+    setPeopleSourceMode('manual');
+    setPublicPeopleNotes('Imported from ChatGPT JSON');
+    setPublicLeadershipText(`Imported from ChatGPT: ${data.roleMap.length} roles, ${data.stakeholderHypotheses.length} stakeholder hypotheses`);
+    if (company.reconFindings) {
+      updateCompany(company.id, {
+        reconFindings: {
+          ...company.reconFindings,
+          publicPeopleNotes: 'Imported from ChatGPT JSON',
+          publicLeadershipText: `Imported from ChatGPT: ${data.roleMap.length} roles, ${data.stakeholderHypotheses.length} stakeholder hypotheses`,
+          peopleSignals: data,
+          scanDate: new Date().toISOString(),
+        },
+      });
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -862,7 +907,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
         subtitle={`Public intelligence scanner for ${company.basic.name}`}
       />
 
-      {/* Safety Notice */}
+      {/* Recon Progress Bar */}
+      <ReconProgressBar
+        currentStep={activeStep}
+        completedSteps={completedSteps}
+        onStepClick={(step) => {
+          const tab = step === 'analyze' ? 'tools' : step;
+          setActiveTab(tab as Tab);
+        }}
+      />
+
       <div style={{
         background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)',
         borderRadius: 8, padding: '10px 16px', marginBottom: 20, fontSize: 12, color: '#94a3b8'
@@ -889,7 +943,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
           </div>
         ))}
       </div>
-
       {/* ─── TAB: DISCOVER ──────────────────────────────────── */}
       {activeTab === 'discover' && (
         <div className="card">
@@ -1387,6 +1440,14 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
             </div>
 
+            {/* LinkedIn Source Assistant Panel */}
+            <LinkedInSourceAssistant
+              companyName={company.basic.name}
+              onAutoFill={handleLinkedInAutoFill}
+            />
+
+            {/* ChatGPT JSON Import */}
+            <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
 
             {/* People Source Discovery Section */}
             <div style={{
@@ -1905,8 +1966,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               <div style={{ borderTop: '1px solid #2a3a5c', paddingTop: 16 }}>
                 <div className="section-title" style={{ fontSize: 14 }}>📋 Copy Reports</div>
                 <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = [
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Recon Summary', () => {
+                    return [
                       `Public Recon Summary for ${company.basic.name}`,
                       `Scan Date: ${new Date().toISOString().slice(0, 10)}`,
                       '',
@@ -1922,51 +1983,27 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       'Inferred Workflows:',
                       ...inferredWorkflows.map(w => `  [${w.confidence}] ${w.workflowName} (${w.department})`),
                     ].join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  })}>
                     📋 Recon Summary
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = [
-                      `CRM-Ready Recon Brief: ${company.basic.name}`,
-                      '='.repeat(50),
-                      '',
-                      'Detected Tools:',
-                      ...detectedTools.map(t => `  ${t.toolName} — ${t.evidence}`),
-                      '',
-                      'Inferred Workflows:',
-                      ...inferredWorkflows.map(w => `  ${w.workflowName}: ${w.discoveryQuestion}`),
-                      '',
-                      'Top Openings:',
-                      ...openings.slice(0, 3).map(o => `  ${o.title}\n    First Line: ${o.firstLine}\n    Discovery: ${o.discoveryQuestion}`),
-                      '',
-                      'Suggested Demo Prompt:',
-                      ...openings.slice(0, 1).map(o => `  ${o.suggestedBuildPrompt}`),
-                    ].join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('CRM-Ready Brief', generateCrmBriefText)}>
                     📋 CRM-Ready Brief
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o =>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('First Outreach Lines', () => {
+                    return openings.map(o =>
                       `Opening: ${o.title}\nFirst Line: ${o.firstLine}\nDiscovery: ${o.discoveryQuestion}\n---`
                     ).join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  })}>
                     📋 First Outreach Lines
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o =>
-                      `Discovery: ${o.discoveryQuestion}`
-                    ).join('\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Discovery Questions', () => {
+                    return openings.map(o => `Discovery: ${o.discoveryQuestion}`).join('\n');
+                  })}>
                     📋 Discovery Questions
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => {
-                    const text = openings.map(o => o.suggestedBuildPrompt).filter(Boolean).join('\n---\n');
-                    navigator.clipboard.writeText(text);
-                  }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Native.Builder Prompts', () => {
+                    return openings.map(o => o.suggestedBuildPrompt).filter(Boolean).join('\n---\n');
+                  })}>
                     📋 Native.Builder Prompts
                   </button>
                 </div>

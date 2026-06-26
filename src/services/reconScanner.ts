@@ -216,7 +216,24 @@ export async function fetchPublicUrl(url: string): Promise<{
   } catch (err: unknown) {
     const error = err as Error;
     if (error.name === 'AbortError') return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
-    return { success: false, error: 'Local fetch failed — retrying via proxy', blocked: true };
+    const isCors = error.message?.includes('Failed to fetch') ||
+                   error.message?.includes('NetworkError') ||
+                   error.name === 'TypeError' ||
+                   error.message?.includes('CORS');
+
+    if (isCors) {
+      return {
+        success: false,
+        error: 'Local fetch failed — retrying via proxy',
+        blocked: true,
+      };
+    }
+
+    if (error.name === 'AbortError') {
+      return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
+    }
+
+    return { success: false, error: error.message || 'Unknown error', blocked: false };
   }
 }
 
@@ -241,7 +258,7 @@ export async function fetchWithCorsFallback(url: string): Promise<{
     return { ...result, fetchMethod: 'browser-fetch' };
   }
 
-  // ── 3rd: NinjaPear proxy ──
+  // ── 3rd: NinjaPear proxy (last resort, rate-limited) ──
   if (result.blocked) {
     console.log(`[ReconScanner] Browser fetch blocked, trying NinjaPear proxy for: ${url}`);
     const backendResult = await scanUrlViaBackend(url);
@@ -291,6 +308,7 @@ export async function scanCompanyPublicSurface(
       urlInfo.fetchedText = (result.text || '').slice(0, settings.maxCharsPerPage);
       urlInfo.fetchSourceType = result.fetchMethod || 'browser-fetch';
       const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
+
       fetchedPages.push({ url: urlInfo.url, html: result.html, text: result.text || '' });
       allTexts.push({ text: cleanedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight });
 
@@ -299,6 +317,12 @@ export async function scanCompanyPublicSurface(
         allDetectedTools.push(...fpResult.detected);
         allDetectedTools.push(...inferToolsFromText(cleanedText, urlInfo.url));
       }
+    } else if (result.blocked) {
+      urlInfo.status = 'blocked';
+      urlInfo.notes = result.error || 'All fetch methods failed. Paste page content manually.';
+    } else {
+      urlInfo.status = 'failed';
+      urlInfo.notes = result.error || 'Fetch failed';
     }
   }
 

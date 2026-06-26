@@ -34,7 +34,7 @@ import type {
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
   PeopleSourceQueueItem, PeopleSourceQueueStatus,
-  DiscoveredEmployee, LinkedInPostSignal,
+  DiscoveredEmployee, LinkedInPostSignal, SourceWeight,
 } from '../types';
 
 type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
@@ -271,6 +271,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
 
+  // ─── Step 2: Fetch & Analyze ────────────────────────────────
+
   const handleFetchAndAnalyze = async () => {
     setScanStatus('fetching');
     setScanError('');
@@ -279,17 +281,17 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const urlsToScan = discoveredUrls.filter(u => u.status === 'unscanned').slice(0, settings.maxPagesPerScan);
 
     const localDetected: DetectedTool[] = [];
-    const allPageTexts: { text: string; url: string; html?: string }[] = [];
+    const allPageTexts: { text: string; url: string; html?: string; sourceWeight?: SourceWeight }[] = [];
     let updatedUrls = [...discoveredUrls];
 
     // Lazy-import content quality
     const { classifyFetchResult, classifySourceWeight, cleanContentForInference, shouldExcludeFromInference, shouldSuppressWorkflowInference } = await import('../services/contentQuality');
 
+
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
       const result = await fetchWithCorsFallback(urlInfo.url);
-
       // Use content quality classifier
       const classification = classifyFetchResult(urlInfo.url, result.html, result.text, result.httpStatus, result.error, result.blocked);
       const sourceWeight = classifySourceWeight(urlInfo.pageType, classification.status, result.fetchMethod);
@@ -309,7 +311,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
       if (result.success && result.html && !shouldExcludeFromInference(classification.status, sourceWeight)) {
         const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
-        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html });
+        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html, sourceWeight });
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
@@ -324,7 +326,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
     for (const urlInfo of pastedUrls) {
       if (urlInfo.fetchedText) {
-        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
+        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight || 'high_signal' });
         if (settings.enableToolFingerprinting) {
           const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...inferToolsFromText(urlInfo.fetchedText, urlInfo.url));
@@ -350,6 +352,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
+        if (page.sourceWeight && shouldSuppressWorkflowInference(page.sourceWeight)) continue;
         for (const w of inferWorkflowsFromText(page.text, page.url, localTools)) {
           const existing = wfMap.get(w.workflowName);
           if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);

@@ -1,5 +1,5 @@
 // ============================================================
-// Team Page Extractor — v1.0
+// Team Page Extractor — v1.1
 // Aggressive name/role extraction from HTML using multiple strategies:
 //   1. Schema.org Person JSON-LD
 //   2. hCard microformat
@@ -8,9 +8,11 @@
 //   5. Blog byline / author meta extraction
 //
 // All extraction is from public HTML — no login, no private data.
+// Uses canonical COMMON_FIRST_NAMES from peopleSignalEngine.
 // ============================================================
 
 import type { ConfidenceLevel } from '../types';
+import { COMMON_FIRST_NAMES } from './peopleSignalEngine';
 
 // ── Output type ───────────────────────────────────────────────
 
@@ -23,40 +25,6 @@ export interface ExtractedPerson {
   sourceUrl: string;
   confidence: ConfidenceLevel;
 }
-
-// ── First-name dictionary (common Western business names) ─────
-
-const COMMON_FIRST_NAMES = new Set([
-  'aaron','adam','adrian','alex','alexander','alice','amanda','amy','andrea','andrew',
-  'angela','anna','anne','anthony','ashley','barbara','ben','benjamin','beth','bill',
-  'bob','brad','brandon','brenda','brian','brittany','bruce','cameron','carlos','carol',
-  'carolyn','catherine','chad','charles','charlotte','chris','christian','christina',
-  'christopher','claire','clara','colin','connor','craig','cynthia','dan','daniel',
-  'david','deborah','dennis','derek','diana','diane','donald','donna','douglas',
-  'dylan','edward','elizabeth','ellen','emily','emma','eric','erica','erin','ethan',
-  'frank','gary','george','grace','greg','gregory','hannah','harold','heather','helen',
-  'henry','holly','ian','isaac','jack','jacob','jake','james','jane','janet','jason',
-  'jeff','jeffrey','jennifer','jeremy','jessica','jill','jim','joan','joe','john',
-  'jonathan','jordan','jose','joseph','josh','joshua','joyce','julia','julie','justin',
-  'karen','kate','katherine','kathryn','kathy','katie','keith','kelly','ken','kevin',
-  'kim','kimberly','kyle','laura','lauren','lawrence','linda','lisa','liz','logan',
-  'lucas','luke','marc','margaret','maria','marie','mark','martin','mary','matt',
-  'matthew','megan','melissa','michael','michelle','mike','molly','nancy','natalie',
-  'nathan','nicholas','nicole','noah','oliver','olivia','pamela','pat','patricia',
-  'patrick','paul','peter','phil','philip','rachel','raymond','rebecca','richard',
-  'rick','robert','robin','ron','ronald','rose','russell','ryan','samantha','samuel',
-  'sandra','sara','sarah','scott','sean','sharon','shawn','sophia','stacy','stephanie',
-  'stephen','steve','steven','susan','taylor','teresa','thomas','tim','timothy','todd',
-  'tom','tony','travis','tyler','victoria','vincent','william','zach','zachary',
-  // Non-Western additions
-  'aanya','abdul','ahmed','akira','ali','amir','amit','ananya','anjali','arjun',
-  'aravind','asuka','bhavna','chen','deepak','devi','dmitry','elena','fatima',
-  'gauri','gupta','haruki','hiroshi','igor','indra','jing','kai','kavita','kenji',
-  'kim','krishna','kumar','li','ling','mei','michael','mohammed','nadia','nakamura',
-  'neha','nikita','olga','omar','park','patel','priya','qiang','raj','rajesh',
-  'ravi','sakura','sanjay','sato','sharma','sheng','shin','suresh','suzuki','tanaka',
-  'vikram','vijay','wang','wei','xiao','yamada','yang','yuki','zhang',
-]);
 
 // ── Product/technology term blocklist ─────────────────────────
 
@@ -84,8 +52,6 @@ const PRODUCT_BLOCKLIST = new Set([
   'revenue operations','sales engagement','marketing automation',
   'customer data platform','identity resolution','audience segmentation',
 ]);
-
-// ── Schema.org JSON-LD extraction ─────────────────────────────
 
 function extractFromJsonLd(html: string, sourceUrl: string): ExtractedPerson[] {
   const people: ExtractedPerson[] = [];

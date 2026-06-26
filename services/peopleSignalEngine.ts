@@ -1,10 +1,8 @@
 // ============================================================
-// People Signal Engine — v0.4
+// People Signal Engine — v0.5
 // Public people & role intelligence from pasted public sources
-// ============================================================
-// SAFETY: This engine ONLY processes text that the user has
-// explicitly pasted from publicly available business sources.
-// It does NOT scrape, crawl, login, or access any restricted data.
+// Canonical source for COMMON_FIRST_NAMES, PRODUCT_BLOCKLIST,
+// and role/keyword detection used across all extraction engines.
 // ============================================================
 
 import type {
@@ -22,86 +20,104 @@ function uid(prefix = 'ps'): string {
 // ─── Role Signal Keywords ─────────────────────────────────────
 
 const ROLE_SIGNALS: { keywords: string[]; roleType: RoleMapEntry['roleType']; title: string; department: string }[] = [
-  // Executive / Founder
   { keywords: ['founder', 'ceo', 'chief executive', 'owner', 'president', 'co-founder'], roleType: 'executive_founder', title: 'Founder / CEO', department: 'Executive' },
   { keywords: ['founder/executive'], roleType: 'executive_founder', title: 'Founder / Executive', department: 'Executive' },
-
-  // Sales / GTM
   { keywords: ['sales', 'gtm', 'go-to-market', 'bdr', 'sdr', 'account executive', 'revenue', 'sales development'], roleType: 'sales_gtm', title: 'Sales / GTM Lead', department: 'Sales & Marketing' },
   { keywords: ['sales/gtm'], roleType: 'sales_gtm', title: 'Sales / GTM Lead', department: 'Sales & Marketing' },
-
-  // Operations
   { keywords: ['operations', 'coo', 'chief operating', 'ops manager', 'operational'], roleType: 'operations', title: 'Operations Lead', department: 'Operations' },
   { keywords: ['operations ownership'], roleType: 'operations', title: 'Operations Lead', department: 'Operations' },
-
-  // Finance / Admin
   { keywords: ['finance', 'cfo', 'chief financial', 'admin', 'accounting', 'controller', 'bookkeeping'], roleType: 'finance_admin', title: 'Finance / Admin Lead', department: 'Finance & Administration' },
   { keywords: ['finance/admin'], roleType: 'finance_admin', title: 'Finance / Admin Lead', department: 'Finance & Administration' },
-
-  // Support
   { keywords: ['support', 'customer success', 'customer service', 'help desk', 'support/customer'], roleType: 'support', title: 'Support / Customer Success Lead', department: 'Customer Support' },
   { keywords: ['support/customer inquiry'], roleType: 'support', title: 'Support / Customer Inquiry Lead', department: 'Customer Support' },
-
-  // Technical / Product
   { keywords: ['technical', 'cto', 'chief technology', 'product', 'engineering', 'developer', 'engineer', 'tech lead', 'technical/product'], roleType: 'technical_product', title: 'Technical / Product Lead', department: 'Technology & Product' },
   { keywords: ['technical/product ownership'], roleType: 'technical_product', title: 'Technical / Product Owner', department: 'Technology & Product' },
-
-  // Security / Compliance
   { keywords: ['security', 'compliance', 'ciso', 'chief information security', 'hihat', 'cybersecurity', 'security/compliance'], roleType: 'security_compliance', title: 'Security / Compliance Lead', department: 'Security & Compliance' },
   { keywords: ['security/compliance ownership'], roleType: 'security_compliance', title: 'Security / Compliance Owner', department: 'Security & Compliance' },
 ];
 
-// ─── First-Name Dictionary & Product Blocklist ──────────────────
+// ─── Canonical First-Name Dictionary ───────────────────────────
 
 export const COMMON_FIRST_NAMES = new Set([
-  'aaron','adam','adrian','alex','alexander','alice','amanda','amy','andrea','andrew',
-  'angela','anna','anthony','ashley','barbara','ben','benjamin','brandon','brenda',
-  'brian','brittany','carlos','carol','carolyn','chad','charles','chris','christian',
-  'christina','christopher','claire','cynthia','dan','daniel','david','deborah','dennis',
-  'diana','donald','donna','douglas','edward','elizabeth','emily','emma','eric',
-  'erica','ethan','gary','george','greg','gregory','hannah','heather','helen',
-  'henry','jacob','jake','james','jane','janet','jason','jeff','jeffrey','jennifer',
-  'jeremy','jessica','jill','jim','joan','joe','john','jonathan','jordan','jose',
-  'josh','joshua','joyce','julia','julie','justin','karen','kate','katherine','kathryn',
-  'kathy','katie','keith','kelly','ken','kevin','kim','kimberly','kyle','laura',
-  'lauren','linda','lisa','liz','marc','margaret','maria','mark','mary','matt',
-  'matthew','megan','melissa','michael','michelle','mike','nancy','natalie','nathan',
-  'nicholas','nicole','pamela','pat','patrick','paul','peter','philip','rachel',
-  'raymond','rebecca','richard','robert','ronald','ryan','samantha','samuel','sandra',
-  'sarah','scott','sean','sharon','stephanie','stephen','steve','steven','susan',
-  'taylor','teresa','thomas','tim','timothy','todd','tom','tyler','victoria','william','zach',
-  'abigail','aiden','alexa','alison','allison','alvin','amelia','ann','anne','april',
-  'arthur','austin','beatrice','beth','betty','beverly','bob','brad','bradley','bruce',
-  'bryan','caleb','cameron','carl','carmen','carrie','catherine','charlotte','cheryl',
-  'chloe','christine','clara','clarence','cody','colin','connor','corey','courtney',
-  'craig','curtis','dale','dana','danielle','darlene','darren','dave','dean','debbie',
-  'debra','denise','derek','derrick','devin','diane','dolores','dominique','dustin',
-  'dylan','earl','eddie','edith','edna','eileen','elaine','eleanor','elijah','ella',
-  'ellen','ellie','elsie','erin','esther','eugene','eva','evan','evelyn','frank',
+  // Standard Western names
+  'aaron','adam','adrian','alex','alexander','alice','amanda','amy','andrew',
+  'angela','anna','anne','anthony','ashley','barbara','ben','benjamin','beth','bill',
+  'bob','brad','brandon','brenda','brian','brittany','bruce','cameron','carlos','carol',
+  'carolyn','catherine','chad','charles','charlotte','chris','christian','christina',
+  'christopher','claire','clara','colin','connor','craig','cynthia','dan','daniel',
+  'david','deborah','dennis','derek','diana','diane','donald','donna','douglas',
+  'dylan','edward','elizabeth','ellen','emily','emma','eric','erica','erin','ethan',
+  'frank','gary','george','grace','greg','gregory','hannah','harold','heather','helen',
+  'henry','holly','ian','isaac','jack','jacob','jake','james','jane','janet','jason',
+  'jeff','jeffrey','jennifer','jeremy','jessica','jill','jim','joan','joe','john',
+  'jonathan','jordan','jose','joseph','josh','joshua','joyce','julia','julie','justin',
+  'karen','kate','katherine','kathryn','kathy','katie','keith','kelly','ken','kevin',
+  'kim','kimberly','kyle','laura','lauren','lawrence','linda','lisa','liz','logan',
+  'lucas','luke','marc','margaret','maria','marie','mark','martin','mary','matt',
+  'matthew','megan','melissa','michael','michelle','mike','molly','nancy','natalie',
+  'nathan','nicholas','nicole','noah','oliver','olivia','pamela','pat','patricia',
+  'patrick','paul','peter','phil','philip','rachel','raymond','rebecca','richard',
+  'rick','robert','robin','ron','ronald','rose','russell','ryan','samantha','samuel',
+  'sandra','sara','sarah','scott','sean','sharon','shawn','sophia','stacy','stephanie',
+  'stephen','steve','steven','susan','taylor','teresa','thomas','tim','timothy','todd',
+  'tom','tony','travis','tyler','victoria','vincent','william','zach','zachary',
+  'abigail','aiden','alexa','alison','allison','alvin','amelia','ann','april',
+  'arthur','austin','beatrice','betty','beverly','bradley',
+  'bryan','caleb','carmen','carrie','cheryl',
+  'chloe','christine','clarence','cody','corey','courtney',
+  'curtis','dale','dana','danielle','darlene','darren','dave','dean','debbie',
+  'debra','denise','derrick','devin','dolores','dominique','dustin',
+  'earl','eddie','edith','edna','eileen','elaine','eleanor','elijah','ella',
+  'ellie','elsie','esther','eugene','eva','evan','evelyn',
   'fred','frederick','gabriel','gail','gavin','genevieve','georgia','gilbert',
-  'glenda','glenn','gloria','grace','guy','harold','harry','hazel','hector','holly',
-  'howard','hugh','ian','irene','isaac','isabella','jack','jackson','jacqueline',
+  'glenda','glenn','gloria','guy',
+  'harry','hazel','hector',
+  'howard','hugh','irene','isabella','jackson','jacqueline',
   'jamie','jared','jay','jean','jeanette','jenna','jeremiah','jerry','jesse','jesus',
-  'joanne','jocelyn','joel','johnny','jon','joseph','josephine','judith','judy',
+  'joanne','jocelyn','joel','johnny','jon','josephine','judith','judy',
   'kaitlyn','kara','karl','kathleen','katrina','kayla','kendra','kenneth','kerry',
-  'kristen','kristin','kurt','lance','larry','lawrence','leah','lee','leo','leon',
-  'leonard','leslie','lillian','lindsay','logan','lois','lori','louis','louise',
-  'lucas','lucy','luis','luke','lydia','mackenzie','madison','malcolm','manuel',
-  'marcus','marilyn','marion','marjorie','marlene','marshall','martha','martin',
+  'kristen','kristin','kurt','lance','larry','leah','lee','leo','leon',
+  'leonard','leslie','lillian','lindsay','lois','lori','louis','louise',
+  'lucy','luis','lydia','mackenzie','madison','malcolm','manuel',
+  'marcus','marilyn','marion','marjorie','marlene','marshall','martha',
   'marvin','maurice','max','melanie','melinda','melvin','mia','micheal','miguel',
-  'mildred','mitchell','molly','monica','morgan','myron','naomi','nathaniel','neil',
-  'nick','nina','noah','nolan','norma','norman','olivia','owen','paige','pam',
-  'patricia','paula','pauline','peggy','penny','perry','phillip','phyllis','randall',
-  'randy','regina','reginald','renee','rhonda','ricardo','rick','ricky','riley',
-  'rita','roberta','robin','rodney','roger','ron','ronnie','rosa','rosemary','roy',
-  'ruby','russell','ruth','sally','sam','sara','savannah','sebastian','seth','shane',
-  'shannon','shaun','shawn','sheila','shelby','sherry','shirley','sidney','sierra',
-  'sofia','sonia','stacey','stacy','stanley','stella','sue','sylvia','tammy','tara',
+  'mildred','mitchell','monica','morgan','myron','naomi','nathaniel','neil',
+  'nick','nina','nolan','norma','norman','owen','paige','pam',
+  'paula','pauline','peggy','penny','perry','phillip','phyllis','randall',
+  'randy','regina','reginald','renee','rhonda','ricardo','ricky','riley',
+  'rita','roberta','rodney','roger','ronnie','rosa','rosemary','roy',
+  'ruby','ruth','sally','sam','savannah','sebastian','seth','shane',
+  'shannon','shaun','sheila','shelby','sherry','shirley','sidney','sierra',
+  'sofia','sonia','stacey','stanley','stella','sue','sylvia','tammy','tara',
   'ted','terrance','terry','thelma','theodore','tiffany','timmy','tina','tommy',
-  'toni','tony','tracey','travis','trevor','troy','tyrone','valerie','vanessa',
-  'vera','vernon','veronica','vincent','virginia','vivian','wade','wallace','walter',
-  'wanda','warren','wayne','wendy','wesley','willard','willie','wilma','xavier','zachary',
+  'toni','tracey','trevor','troy','tyrone','valerie','vanessa',
+  'vera','vernon','veronica','virginia','vivian','wade','wallace','walter',
+  'wanda','warren','wayne','wendy','wesley','willard','willie','wilma','xavier',
+  // International / non-Western
+  'aanya','abdul','ahmed','akira','ali','amir','amit','ananya','anjali','arjun',
+  'aravind','asuka','bhavna','chen','deepak','devi','dmitry','elena','fatima',
+  'gauri','gupta','haruki','hiroshi','igor','indra','jing','kai','kavita','kenji',
+  'krishna','kumar','li','ling','mei','mohammed','nadia','nakamura',
+  'neha','nikita','olga','omar','park','patel','priya','qiang','raj','rajesh',
+  'ravi','sakura','sanjay','sato','sharma','sheng','shin','suresh','suzuki','tanaka',
+  'vikram','vijay','wang','wei','xiao','yamada','yang','yuki','zhang',
+  // Extended international
+  'andrea','pawel','marco','luca','giovanni','francesco',
+  'alessandro','matteo','lorenzo','federico','stefano','nikolai',
+  'dmitri','sergei','vladimir','alexei','yuri',
+  'bjorn','sven','lars','anders','magnus','henrik',
+  'jan','pieter','klaas','hendrik','willem',
+  'jean-pierre','jean-luc','pierre','francois','antoine',
+  'hans','klaus','dieter','wolfgang','juergen',
+  'juan','luis','pedro','rafael',
+  'yuki','takeshi','ming','jian','lei','xin',
+  'amos','moshe','avi','yael',
+  'bridget','siobhan','ciaran','aoife','niamh',
+  'josef','tomas','karel','pavel',
+  'nikola','dusan','marko','ivan','dragan',
 ]);
+
+// ─── Product/Technology Blocklist ─────────────────────────────
 
 export const PRODUCT_BLOCKLIST = new Set([
   'builder platform', 'data platform', 'model hub', 'compute infrastructure',
@@ -111,32 +127,40 @@ export const PRODUCT_BLOCKLIST = new Set([
   'marketing automation', 'sales platform', 'support platform',
   'integration platform', 'developer platform', 'app marketplace',
   'knowledge base', 'help center', 'community forum', 'learning management',
+  'web portal','saas platform','enterprise solution','digital transformation',
+  'workflow automation','business intelligence',
+  'data analytics','customer experience','supply chain',
+  'identity management','access control','network security','endpoint protection',
+  'threat detection','risk management','compliance management','devops platform',
+  'ci/cd pipeline','container orchestration','microservices architecture',
+  'event streaming','message queue','data warehouse','data lake',
+  'real-time analytics','predictive modeling','natural language processing',
+  'computer vision','speech recognition','recommendation engine',
+  'fraud detection','anomaly detection','sentiment analysis',
+  'conversational ai','generative ai','large language model',
+  'blockchain platform','cryptocurrency exchange','nft marketplace',
+  'augmented reality','virtual reality','mixed reality','spatial computing',
+  'internet of things','edge computing','cloud native','serverless',
+  'low code','no code','citizen developer','process mining',
+  'robotic process automation','intelligent automation','hyper automation',
+  'commerce platform','marketplace platform','subscription management',
+  'revenue operations','sales engagement',
+  'customer data platform','identity resolution','audience segmentation',
 ]);
 
 export function isLikelyPersonName(text: string): boolean {
   const trimmed = text.trim();
   const words = trimmed.split(/\s+/);
-
-  // Must be 2-3 words (first + last, or first + middle + last)
   if (words.length < 2 || words.length > 3) return false;
-
-  // First word must be a known first name
   if (!COMMON_FIRST_NAMES.has(words[0].toLowerCase())) return false;
-
-  // Must not match product blocklist
   if (PRODUCT_BLOCKLIST.has(trimmed.toLowerCase())) return false;
-
-  // No digits
   if (/\d/.test(trimmed)) return false;
-
-  // Not all uppercase
   if (trimmed === trimmed.toUpperCase() && trimmed.length > 3) return false;
-
-  // Reasonable name length
   if (trimmed.length > 30) return false;
-
   return true;
 }
+
+// ─── Role Title Keywords ───────────────────────────────────────
 
 export const ROLE_TITLE_KEYWORDS = [
   'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cio', 'ciso', 'chro', 'cpo',
@@ -150,7 +174,6 @@ export const ROLE_TITLE_KEYWORDS = [
   'customer success', 'account executive', 'business development',
 ];
 
-// Check if a line/paragraph contains a known role keyword
 export function hasRoleKeywordNearby(text: string): boolean {
   return ROLE_TITLE_KEYWORDS.some(k => text.toLowerCase().includes(k));
 }
@@ -235,8 +258,7 @@ const ROLE_CONCERNS: Record<string, { concern: string; discoveryQ: string; influ
 
 const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleTitle: string; questions: string[] }[] = [
   {
-    category: 'founder_ceo',
-    roleTitle: 'Founder / CEO',
+    category: 'founder_ceo', roleTitle: 'Founder / CEO',
     questions: [
       'As the business grows, what operational bottlenecks keep you from scaling?',
       'What would a successful automation partnership look like for you?',
@@ -244,8 +266,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'operations',
-    roleTitle: 'Operations Lead',
+    category: 'operations', roleTitle: 'Operations Lead',
     questions: [
       'What manual processes take up the most team time each week?',
       'How do you track operational efficiency across departments?',
@@ -253,8 +274,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'sales_gtm',
-    roleTitle: 'Sales / GTM Lead',
+    category: 'sales_gtm', roleTitle: 'Sales / GTM Lead',
     questions: [
       'What does your lead intake process look like from first click to qualified meeting?',
       'How confident are you that no leads are falling through the cracks?',
@@ -262,8 +282,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'support',
-    roleTitle: 'Support Lead',
+    category: 'support', roleTitle: 'Support Lead',
     questions: [
       'How many support tickets do you handle per week and what percentage are repetitive?',
       'What is your current response time and first-contact resolution rate?',
@@ -271,8 +290,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'finance_admin',
-    roleTitle: 'Finance / Admin Lead',
+    category: 'finance_admin', roleTitle: 'Finance / Admin Lead',
     questions: [
       'How do you currently manage invoicing, billing, and payment reconciliation?',
       'What financial reporting processes are still manual?',
@@ -280,8 +298,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'security_compliance',
-    roleTitle: 'Security / Compliance Lead',
+    category: 'security_compliance', roleTitle: 'Security / Compliance Lead',
     questions: [
       'What compliance frameworks do you need to maintain and how do you track audit readiness?',
       'How do you manage security awareness and incident response?',
@@ -289,8 +306,7 @@ const QUESTION_TEMPLATES: { category: PeopleDiscoveryQuestion['category']; roleT
     ],
   },
   {
-    category: 'technical_product',
-    roleTitle: 'Technical / Product Lead',
+    category: 'technical_product', roleTitle: 'Technical / Product Lead',
     questions: [
       'What tool or integration gaps are creating the most friction for your team?',
       'How do you currently prioritize and manage internal tool requests?',
@@ -314,383 +330,146 @@ export function analyzePeopleText(
   discoveryQuestions: PeopleDiscoveryQuestion[];
 } {
   const lower = text.toLowerCase();
-
-  // ── 1. Role Map ──────────────────────────────────────────
   const roleMap = buildRoleMap(lower, text, sourceType, sourceUrl);
-
-  // ── 2. Stakeholder Hypotheses ────────────────────────────
   const stakeholderHypotheses = buildStakeholderHypotheses(roleMap, sourceType, sourceUrl);
-
-  // ── 3. Hiring Signals ───────────────────────────────────
   const hiringSignals = buildHiringSignals(lower, text, sourceType, sourceUrl);
-
-  // ── 4. Milestone Signals ────────────────────────────────
   const milestoneSignals = buildMilestoneSignals(lower, text, sourceType, sourceUrl);
-
-  // ── 5. Outreach Angles ──────────────────────────────────
   const outreachAngles = buildOutreachAngles(roleMap, stakeholderHypotheses, hiringSignals, sourceType, sourceUrl);
-
-  // ── 6. Discovery Questions ──────────────────────────────
   const discoveryQuestions = buildDiscoveryQuestions(roleMap, sourceType, sourceUrl);
-
-  return {
-    roleMap,
-    stakeholderHypotheses,
-    hiringSignals,
-    milestoneSignals,
-    outreachAngles,
-    discoveryQuestions,
-  };
+  return { roleMap, stakeholderHypotheses, hiringSignals, milestoneSignals, outreachAngles, discoveryQuestions };
 }
 
-// ─── Role Map Builder ──────────────────────────────────────────
-
-function buildRoleMap(
-  lower: string,
-  originalText: string,
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): RoleMapEntry[] {
+function buildRoleMap(lower: string, originalText: string, sourceType: PeopleSignalSourceType, sourceUrl: string): RoleMapEntry[] {
   const found = new Set<string>();
   const entries: RoleMapEntry[] = [];
-
   for (const signal of ROLE_SIGNALS) {
     if (signal.keywords.some(k => lower.includes(k))) {
       const key = signal.roleType;
       if (found.has(key)) continue;
       found.add(key);
-
       const evidence = extractEvidence(originalText, signal.keywords[0]);
-
-      entries.push({
-        roleType: signal.roleType,
-        roleTitle: signal.title,
-        department: signal.department,
-        evidence,
-        confidence: 'Medium',
-        sourceType,
-        sourceUrl,
-      });
+      entries.push({ roleType: signal.roleType, roleTitle: signal.title, department: signal.department, evidence, confidence: 'Medium', sourceType, sourceUrl });
     }
   }
-
-  // Check for role gaps ("may need", "unknown", "gap", "not yet")
   const gapPatterns = ['may need', 'need to be mapped', 'unknown', 'gap', 'not yet', 'no dedicated', 'no clear'];
-  if (gapPatterns.some(p => lower.includes(p))) {
-    if (!found.has('unknown_decision_maker_gap')) {
-      const gapEvidence = extractEvidence(originalText, 'need to be mapped') ||
-        extractEvidence(originalText, 'gap') ||
-        extractEvidence(originalText, 'no dedicated') ||
-        'Role ownership gaps identified in the text';
-      entries.push({
-        roleType: 'unknown_decision_maker_gap',
-        roleTitle: 'Unknown Decision-Maker',
-        department: 'Needs Discovery',
-        evidence: gapEvidence,
-        confidence: 'High',
-        sourceType,
-        sourceUrl,
-      });
-    }
+  if (gapPatterns.some(p => lower.includes(p)) && !found.has('unknown_decision_maker_gap')) {
+    const gapEvidence = extractEvidence(originalText, 'need to be mapped') || extractEvidence(originalText, 'gap') || extractEvidence(originalText, 'no dedicated') || 'Role ownership gaps identified in the text';
+    entries.push({ roleType: 'unknown_decision_maker_gap', roleTitle: 'Unknown Decision-Maker', department: 'Needs Discovery', evidence: gapEvidence, confidence: 'High', sourceType, sourceUrl });
   }
-
   return entries;
 }
 
-// ─── Stakeholder Hypotheses Builder ─────────────────────────────
-
-function buildStakeholderHypotheses(
-  roleMap: RoleMapEntry[],
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): StakeholderHypothesis[] {
+function buildStakeholderHypotheses(roleMap: RoleMapEntry[], sourceType: PeopleSignalSourceType, sourceUrl: string): StakeholderHypothesis[] {
   const hypotheses: StakeholderHypothesis[] = [];
-
   for (const role of roleMap) {
     const concern = ROLE_CONCERNS[role.roleType];
     if (!concern) continue;
-
     hypotheses.push({
-      id: uid('sh'),
-      roleTitle: role.roleTitle,
-      department: role.department,
-      likelyConcern: concern.concern,
-      likelyBuyingInfluence: concern.influence,
-      likelyDiscoveryQuestion: concern.discoveryQ,
-      confidence: role.confidence,
-      evidence: role.evidence,
-      sourceType,
-      sourceUrl,
+      id: uid('sh'), roleTitle: role.roleTitle, department: role.department,
+      likelyConcern: concern.concern, likelyBuyingInfluence: concern.influence,
+      likelyDiscoveryQuestion: concern.discoveryQ, confidence: role.confidence,
+      evidence: role.evidence, sourceType, sourceUrl,
     });
   }
-
   return hypotheses;
 }
 
-// ─── Hiring Signals Builder ─────────────────────────────────────
-
-function buildHiringSignals(
-  lower: string,
-  originalText: string,
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): HiringSignal[] {
+function buildHiringSignals(lower: string, originalText: string, sourceType: PeopleSignalSourceType, sourceUrl: string): HiringSignal[] {
   const signals: HiringSignal[] = [];
   const isHiring = HIRING_KEYWORDS.some(k => lower.includes(k));
-
   if (isHiring) {
-    // Check which departments are hiring
     for (const dept of DEPT_HIRING_KEYWORDS) {
       if (dept.keywords.some(k => lower.includes(k))) {
-        signals.push({
-          id: uid('hs'),
-          openRole: `Open role in ${dept.department}`,
-          department: dept.department,
-          growingDepartment: dept.department,
-          roleGap: '',
-          newInitiative: '',
-          repeatedNeed: '',
-          toolProcessHint: '',
-          evidence: extractEvidence(originalText, dept.keywords[0]) || `Department mentioned: ${dept.department}`,
-          confidence: 'Medium',
-          sourceType,
-          sourceUrl,
-        });
+        signals.push({ id: uid('hs'), openRole: `Open role in ${dept.department}`, department: dept.department, growingDepartment: dept.department, roleGap: '', newInitiative: '', repeatedNeed: '', toolProcessHint: '', evidence: extractEvidence(originalText, dept.keywords[0]) || `Department mentioned: ${dept.department}`, confidence: 'Medium', sourceType, sourceUrl });
       }
     }
   }
-
-  // Detect role gaps from "unknown" ownership patterns
   const gapPatterns = [
     { pattern: 'no dedicated', dept: 'Unknown Department', desc: 'No dedicated owner identified' },
     { pattern: 'may need', dept: 'Multiple', desc: 'Ownership may need to be mapped' },
     { pattern: 'needs discovery', dept: 'Multiple', desc: 'Role needs discovery' },
   ];
-
   for (const gp of gapPatterns) {
-    if (lower.includes(gp.pattern)) {
-      const existing = signals.find(s => s.roleGap.includes(gp.desc));
-      if (!existing) {
-        signals.push({
-          id: uid('hs'),
-          openRole: gp.desc,
-          department: gp.dept,
-          growingDepartment: '',
-          roleGap: gp.desc,
-          newInitiative: '',
-          repeatedNeed: '',
-          toolProcessHint: '',
-          evidence: extractEvidence(originalText, gp.pattern) || `Role gap detected: ${gp.desc}`,
-          confidence: 'Medium',
-          sourceType,
-          sourceUrl,
-        });
-      }
+    if (lower.includes(gp.pattern) && !signals.find(s => s.roleGap.includes(gp.desc))) {
+      signals.push({ id: uid('hs'), openRole: gp.desc, department: gp.dept, growingDepartment: '', roleGap: gp.desc, newInitiative: '', repeatedNeed: '', toolProcessHint: '', evidence: extractEvidence(originalText, gp.pattern) || `Role gap detected: ${gp.desc}`, confidence: 'Medium', sourceType, sourceUrl });
     }
   }
-
   return signals;
 }
 
-// ─── Milestone Signals Builder ──────────────────────────────────
-
-function buildMilestoneSignals(
-  lower: string,
-  originalText: string,
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): MilestoneSignal[] {
+function buildMilestoneSignals(lower: string, originalText: string, sourceType: PeopleSignalSourceType, sourceUrl: string): MilestoneSignal[] {
   const signals: MilestoneSignal[] = [];
   const foundTypes = new Set<string>();
-
   for (const signal of MILESTONE_SIGNALS) {
     if (signal.keywords.some(k => lower.includes(k))) {
       if (foundTypes.has(signal.milestoneType)) continue;
       foundTypes.add(signal.milestoneType);
-
-      signals.push({
-        id: uid('ms'),
-        milestoneType: signal.milestoneType,
-        description: signal.description,
-        evidence: extractEvidence(originalText, signal.keywords[0]) || `Signal: ${signal.description}`,
-        confidence: 'Low',
-        sourceType,
-        sourceUrl,
-      });
+      signals.push({ id: uid('ms'), milestoneType: signal.milestoneType, description: signal.description, evidence: extractEvidence(originalText, signal.keywords[0]) || `Signal: ${signal.description}`, confidence: 'Low', sourceType, sourceUrl });
     }
   }
-
   return signals;
 }
 
-// ─── Outreach Angles Builder ────────────────────────────────────
-
-function buildOutreachAngles(
-  roleMap: RoleMapEntry[],
-  stakeholderHypotheses: StakeholderHypothesis[],
-  hiringSignals: HiringSignal[],
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): OutreachAngle[] {
+function buildOutreachAngles(roleMap: RoleMapEntry[], stakeholderHypotheses: StakeholderHypothesis[], hiringSignals: HiringSignal[], sourceType: PeopleSignalSourceType, sourceUrl: string): OutreachAngle[] {
   const angles: OutreachAngle[] = [];
-
-  // Angle from top stakeholder hypothesis
   const sorted = [...stakeholderHypotheses].sort((a, b) => b.likelyBuyingInfluence - a.likelyBuyingInfluence);
   if (sorted.length > 0) {
     const top = sorted[0];
-    angles.push({
-      id: uid('oa'),
-      angleText: `Your ${top.roleTitle} likely cares about ${top.likelyConcern.toLowerCase()}. Start the conversation there.`,
-      targetRole: top.roleTitle,
-      confidence: top.confidence,
-      evidence: top.evidence,
-      sourceType,
-      sourceUrl,
-    });
+    angles.push({ id: uid('oa'), angleText: `Your ${top.roleTitle} likely cares about ${top.likelyConcern.toLowerCase()}. Start the conversation there.`, targetRole: top.roleTitle, confidence: top.confidence, evidence: top.evidence, sourceType, sourceUrl });
   }
-
-  // Angle from hiring signals
   for (const hs of hiringSignals.slice(0, 2)) {
     if (hs.openRole) {
-      angles.push({
-        id: uid('oa'),
-        angleText: `Saw you are growing your ${hs.department} team. Growing teams often create workflow pressure that automation can relieve.`,
-        targetRole: `Hiring Manager - ${hs.department}`,
-        confidence: 'Medium',
-        evidence: hs.evidence,
-        sourceType,
-        sourceUrl,
-      });
+      angles.push({ id: uid('oa'), angleText: `Saw you are growing your ${hs.department} team. Growing teams often create workflow pressure that automation can relieve.`, targetRole: `Hiring Manager - ${hs.department}`, confidence: 'Medium', evidence: hs.evidence, sourceType, sourceUrl });
     }
   }
-
-  // Angle from tech/security mention
   const hasTech = roleMap.some(r => r.roleType === 'technical_product');
   const hasSecurity = roleMap.some(r => r.roleType === 'security_compliance');
   if (hasTech && hasSecurity) {
-    angles.push({
-      id: uid('oa'),
-      angleText: 'Your AI automation and security focus suggests an opportunity to build secure, automated workflows that reduce manual overhead.',
-      targetRole: 'Founder / CTO',
-      confidence: 'Medium',
-      evidence: 'Detected both technical/product and security/compliance ownership signals',
-      sourceType,
-      sourceUrl,
-    });
+    angles.push({ id: uid('oa'), angleText: 'Your AI automation and security focus suggests an opportunity to build secure, automated workflows that reduce manual overhead.', targetRole: 'Founder / CTO', confidence: 'Medium', evidence: 'Detected both technical/product and security/compliance ownership signals', sourceType, sourceUrl });
   }
-
   if (angles.length === 0) {
-    angles.push({
-      id: uid('oa'),
-      angleText: 'Based on public information, explore their current operational workflows and where automation could help.',
-      targetRole: 'General',
-      confidence: 'Low',
-      evidence: 'No specific signals detected from public notes',
-      sourceType,
-      sourceUrl,
-    });
+    angles.push({ id: uid('oa'), angleText: 'Based on public information, explore their current operational workflows and where automation could help.', targetRole: 'General', confidence: 'Low', evidence: 'No specific signals detected from public notes', sourceType, sourceUrl });
   }
-
   return angles;
 }
 
-// ─── Discovery Questions Builder ────────────────────────────────
-
-function buildDiscoveryQuestions(
-  roleMap: RoleMapEntry[],
-  sourceType: PeopleSignalSourceType,
-  sourceUrl: string
-): PeopleDiscoveryQuestion[] {
+function buildDiscoveryQuestions(roleMap: RoleMapEntry[], sourceType: PeopleSignalSourceType, sourceUrl: string): PeopleDiscoveryQuestion[] {
   const questions: PeopleDiscoveryQuestion[] = [];
   const foundCategories = new Set<string>();
-
+  const categoryMap: Record<string, PeopleDiscoveryQuestion['category']> = {
+    executive_founder: 'founder_ceo', sales_gtm: 'sales_gtm', operations: 'operations',
+    finance_admin: 'finance_admin', support: 'support', technical_product: 'technical_product',
+    security_compliance: 'security_compliance',
+  };
   for (const role of roleMap) {
-    // Map roleType to question category
-    const categoryMap: Record<string, PeopleDiscoveryQuestion['category']> = {
-      executive_founder: 'founder_ceo',
-      sales_gtm: 'sales_gtm',
-      operations: 'operations',
-      finance_admin: 'finance_admin',
-      support: 'support',
-      technical_product: 'technical_product',
-      security_compliance: 'security_compliance',
-    };
-
     const qCategory = categoryMap[role.roleType];
     if (!qCategory || foundCategories.has(qCategory)) continue;
     foundCategories.add(qCategory);
-
     const templates = QUESTION_TEMPLATES.find(t => t.category === qCategory);
     if (!templates) continue;
-
-    // Pick first question for this role
-    const qText = templates.questions[0];
-    questions.push({
-      id: uid('dq'),
-      targetRole: role.roleTitle,
-      question: qText,
-      category: qCategory,
-      confidence: 'Medium',
-      evidence: role.evidence,
-      sourceType,
-      sourceUrl,
-    });
+    questions.push({ id: uid('dq'), targetRole: role.roleTitle, question: templates.questions[0], category: qCategory, confidence: 'Medium', evidence: role.evidence, sourceType, sourceUrl });
   }
-
-  // Add generic discovery questions for missing roles
-  const allCategories: PeopleDiscoveryQuestion['category'][] = [
-    'founder_ceo', 'operations', 'sales_gtm', 'support',
-    'finance_admin', 'security_compliance', 'technical_product',
-  ];
-
+  const allCategories: PeopleDiscoveryQuestion['category'][] = ['founder_ceo', 'operations', 'sales_gtm', 'support', 'finance_admin', 'security_compliance', 'technical_product'];
   for (const cat of allCategories) {
     if (foundCategories.has(cat)) continue;
     const templates = QUESTION_TEMPLATES.find(t => t.category === cat);
     if (!templates) continue;
-
-    questions.push({
-      id: uid('dq'),
-      targetRole: templates.roleTitle,
-      question: templates.questions[0],
-      category: cat,
-      confidence: 'Low',
-      evidence: `Role not explicitly mentioned in source. Generic discovery question for ${templates.roleTitle}.`,
-      sourceType,
-      sourceUrl,
-    });
+    questions.push({ id: uid('dq'), targetRole: templates.roleTitle, question: templates.questions[0], category: cat, confidence: 'Low', evidence: `Role not explicitly mentioned in source. Generic discovery question for ${templates.roleTitle}.`, sourceType, sourceUrl });
   }
-
-  // Add gap-specific question if unknown_decision_maker_gap exists
   if (roleMap.some(r => r.roleType === 'unknown_decision_maker_gap')) {
-    questions.push({
-      id: uid('dq'),
-      targetRole: 'Unknown Decision-Maker',
-      question: 'Who currently owns the decisions around automation, tools, and workflow improvements?',
-      category: 'founder_ceo',
-      confidence: 'Medium',
-      evidence: 'Role ownership gap identified — question targets mapping decision-maker',
-      sourceType,
-      sourceUrl,
-    });
+    questions.push({ id: uid('dq'), targetRole: 'Unknown Decision-Maker', question: 'Who currently owns the decisions around automation, tools, and workflow improvements?', category: 'founder_ceo', confidence: 'Medium', evidence: 'Role ownership gap identified — question targets mapping decision-maker', sourceType, sourceUrl });
   }
-
   return questions;
 }
-
-// ─── Utility: Extract Evidence ──────────────────────────────────
 
 function extractEvidence(text: string, keyword: string): string {
   const lower = text.toLowerCase();
   const idx = lower.indexOf(keyword.toLowerCase());
   if (idx === -1) return '';
-
   const start = Math.max(0, idx - 40);
   const end = Math.min(text.length, idx + keyword.length + 120);
   let snippet = text.slice(start, end).trim();
-
-  // Clean up snippet boundaries
   if (start > 0) snippet = '...' + snippet;
   if (end < text.length) snippet = snippet + '...';
-
   return snippet;
 }

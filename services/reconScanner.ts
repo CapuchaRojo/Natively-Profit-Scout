@@ -655,7 +655,8 @@ function inferDescription(text: string, pageTexts: { text: string; url: string }
 // ============================================================
 // Aggressive Full Recon Orchestrator (Phase 2)
 // Runs all recon engines: team extraction, web search,
-// LinkedIn jobs/company, and stakeholder enrichment.
+// LinkedIn jobs/company, news intel, social discovery,
+// and stakeholder enrichment.
 // Returns a comprehensive result for the UI to display.
 // ============================================================
 
@@ -663,12 +664,17 @@ import type { ExtractedPerson } from './teamExtractor';
 import type { IntelSignal } from './aggressiveSearchEngine';
 import type { LinkedInJobSignal, LinkedInCompanySignal } from './linkedInPublicEngine';
 import type { Stakeholder } from '../types';
+import type { NewsIntelItem } from './newsIntelEngine';
+import type { SocialFootprint, SocialDiscoveryUrl } from './socialDiscoveryEngine';
 
 export interface AggressiveReconResult {
   extractedPeople: ExtractedPerson[];
   searchIntel: { query: string; signals: IntelSignal[] }[];
   linkedInJobs: LinkedInJobSignal[];
   linkedInCompany?: LinkedInCompanySignal;
+  newsIntel: NewsIntelItem[];
+  socialFootprint: SocialFootprint;
+  socialDiscoveryUrls: SocialDiscoveryUrl[];
   generatedStakeholders: Stakeholder[];
   summary: string;
   errors: string[];
@@ -680,6 +686,8 @@ export async function runFullAggressiveRecon(
   options?: {
     skipLinkedIn?: boolean;
     skipSearch?: boolean;
+    skipNews?: boolean;
+    skipSocial?: boolean;
     maxSearchQueries?: number;
   }
 ): Promise<AggressiveReconResult> {
@@ -688,14 +696,26 @@ export async function runFullAggressiveRecon(
   const searchIntel: { query: string; signals: IntelSignal[] }[] = [];
   let linkedInJobs: LinkedInJobSignal[] = [];
   let linkedInCompany: LinkedInCompanySignal | undefined;
+  let newsIntel: NewsIntelItem[] = [];
+  let socialFootprint: SocialFootprint = {};
+  let socialDiscoveryUrls: SocialDiscoveryUrl[] = [];
   let generatedStakeholders: Stakeholder[] = [];
 
   // Lazy-load engines to avoid circular deps
-  const [{ extractPeopleFromHtml }, { AGGRESSIVE_SEARCH_QUERIES, processSearchResults }, { extractJobsFromLinkedInText, extractCompanyFromLinkedInText, analyzeJobCollection }, { mapExtractedPeopleToStakeholders }] = await Promise.all([
+  const [
+    { extractPeopleFromHtml },
+    { AGGRESSIVE_SEARCH_QUERIES, processSearchResults },
+    { extractJobsFromLinkedInText, extractCompanyFromLinkedInText },
+    { mapExtractedPeopleToStakeholders },
+    { processNewsSearchResults, NEWS_SEARCH_QUERIES },
+    { discoverSocialFootprint, generateCandidateUrls, mergeWithCandidates },
+  ] = await Promise.all([
     import('./teamExtractor'),
     import('./aggressiveSearchEngine'),
     import('./linkedInPublicEngine'),
     import('./stakeholderEnricher'),
+    import('./newsIntelEngine'),
+    import('./socialDiscoveryEngine'),
   ]);
 
   const {
@@ -735,7 +755,7 @@ export async function runFullAggressiveRecon(
     errors.push(`Team page scan failed: ${String(err)}`);
   }
 
-  // ── Step 2: Web search ───────────────────────────────────
+  // ── Step 2: Web search (aggressive signals) ─────────────
   if (!options?.skipSearch) {
     const maxQueries = options?.maxSearchQueries || 6;
     const queries = AGGRESSIVE_SEARCH_QUERIES.slice(0, maxQueries);
@@ -775,7 +795,46 @@ export async function runFullAggressiveRecon(
     }
   }
 
-  // ── Step 4: Generate stakeholders ────────────────────────
+  // ── Step 4: News intel (funding, growth, pain signals) ──
+  if (!options?.skipNews) {
+    try {
+      const newsResults = await processNewsSearchResults(
+        searchWebViaBackend,
+        companyName,
+        { maxResultsPerQuery: 5 }
+      );
+      newsIntel = newsResults;
+    } catch (err) {
+      errors.push(`News intel failed: ${String(err)}`);
+    }
+  }
+  // ── Step 5: Social profile discovery ────────────────────
+  if (!options?.skipSocial) {
+    try {
+      const socialResult = await discoverSocialFootprint(
+        companyName,
+        website,
+        searchWebViaBackend,
+        { maxResultsPerQuery: 5 }
+      );
+      socialFootprint = socialResult.footprint;
+      socialDiscoveryUrls = socialResult.discoveredUrls;
+      
+      // Merge with generated candidates for broader coverage
+      const candidates = generateCandidateUrls(companyName, website);
+      socialDiscoveryUrls = mergeWithCandidates(socialDiscoveryUrls, candidates);
+      
+      for (const err of socialResult.errors) {
+        errors.push(`Social discovery: ${err}`);
+      }
+    } catch (err) {
+      errors.push(`Social discovery failed: ${String(err)}`);
+      // Generate at least candidate URLs
+      socialDiscoveryUrls = generateCandidateUrls(companyName, website);
+    }
+  }
+
+  // ── Step 6: Generate stakeholders ───────────────────────
   if (extractedPeople.length > 0) {
     const result = mapExtractedPeopleToStakeholders(extractedPeople, []);
     generatedStakeholders = result.stakeholders;
@@ -790,6 +849,11 @@ export async function runFullAggressiveRecon(
   if (allSignals.length > 0) summaryParts.push(`${allSignals.length} intel signals (${uniqueSignalTypes.size} types)`);
   if (linkedInJobs.length > 0) summaryParts.push(`${linkedInJobs.length} LinkedIn job postings`);
   if (linkedInCompany?.description) summaryParts.push('LinkedIn company profile captured');
+  if (newsIntel.length > 0) {
+    const newsSignals = newsIntel.flatMap(n => n.signals);
+    summaryParts.push(`${newsSignals.length} news-driven signals (${newsIntel.length} articles)`);
+  }
+  if (Object.keys(socialFootprint).length > 0) summaryParts.push(`${Object.keys(socialFootprint).length} social profiles discovered`);
   if (generatedStakeholders.length > 0) summaryParts.push(`${generatedStakeholders.length} stakeholder records generated`);
 
   const summary = summaryParts.length > 0
@@ -801,6 +865,9 @@ export async function runFullAggressiveRecon(
     searchIntel,
     linkedInJobs,
     linkedInCompany,
+    newsIntel,
+    socialFootprint,
+    socialDiscoveryUrls,
     generatedStakeholders,
     summary,
     errors,

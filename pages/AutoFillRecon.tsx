@@ -13,20 +13,26 @@ import { ReconProgressBar } from '../components/recon/ReconProgressBar';
 import { ChatGptJsonPaste } from '../components/recon/ChatGptJsonPaste';
 import { LinkedInSourceAssistant } from '../components/recon/LinkedInSourceAssistant';
 import {
-  discoverPublicUrls, fetchPublicUrl,
+  discoverPublicUrls, fetchWithCorsFallback,
   applyReconFindingsToCompany,
   generateAutoFillSuggestions, generateReconOpenings,
+  runFullAggressiveRecon,
 } from '../services/reconScanner';
+import type { AggressiveReconResult } from '../services/reconScanner';
 import { analyzePeopleText } from '../services/peopleSignalEngine';
+import { getSourceQualitySummary } from '../services/contentQuality';
+import { extractNamedPeople } from '../services/peopleNameExtractor';
 import {
   discoverPeopleSources, generatePreliminaryPeopleSignals,
   discoverLinkedInEmployees, discoverLinkedInPosts,
   analyzeLinkedInPostText, extractEmployeesFromLinkedInText,
+  extractStakeholderMentions,
 } from '../services/publicSourceDiscovery';
+import type { StakeholderMention } from '../services/publicSourceDiscovery';
 import type {
   Company, CompanyPeople, ReconDiscoveredUrl, DetectedTool, InferredWorkflow,
   ReconAutoFillSuggestion, ReconOpening, ReconFindings,
-  ConfidenceLevel, PeopleSignalSourceType,
+  ConfidenceLevel, PeopleSignalSourceType, AccessStatus,
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
   PeopleSourceQueueItem, PeopleSourceQueueStatus,
@@ -56,7 +62,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [scanError, setScanError] = useState('');
   const [fetchProgress, setFetchProgress] = useState('');
   const [manualPasteText, setManualPasteText] = useState('');
-
+  const [analyzingUrlId, setAnalyzingUrlId] = useState<string | null>(null);
   // People Signal Engine state
   const [manualPeopleText, setManualPeopleText] = useState('');
   const [publicPeopleNotes, setPublicPeopleNotes] = useState('');
@@ -75,11 +81,19 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [reconGenerating, setReconGenerating] = useState(false);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const [stakeholderGenMessage, setStakeholderGenMessage] = useState<string | null>(null);
+  const [extractedPersonNames, setExtractedPersonNames] = useState<string[]>([]);
+  const [extractedStakeholderMentions, setExtractedStakeholderMentions] = useState<StakeholderMention[]>([]);
   const [peopleSourceMode, setPeopleSourceMode] = useState<'manual' | 'recon' | 'none'>('none');
-
   const [generatedStakeholders, setGeneratedStakeholders] = useState<Stakeholder[]>([]);
   const [showBriefPreview, setShowBriefPreview] = useState(false);
   const [briefText, setBriefText] = useState('');
+
+  // ── Aggressive Recon state (Phase 2) ─────────────────────────
+  const [aggressiveReconResult, setAggressiveReconResult] = useState<AggressiveReconResult | null>(null);
+  const [aggressiveReconRunning, setAggressiveReconRunning] = useState(false);
+  const [aggressiveReconStatus, setAggressiveReconStatus] = useState('');
+
+  // Restore recon state from company on mount
   // Restore recon state from company on mount
   useEffect(() => {
     if (company?.reconFindings) {
@@ -141,8 +155,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     try {
       let homepageHtml: string | undefined;
 
-      // Try to fetch homepage
-      const result = await fetchPublicUrl(homepageUrl);
+      // Try to fetch homepage with CORS fallback (→ NinjaPear proxy)
+      const result = await fetchWithCorsFallback(homepageUrl);
       if (result.success && result.html) {
         homepageHtml = result.html;
         setFetchProgress('Homepage fetched successfully');
@@ -179,6 +193,96 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
 
+  // ─── Aggressive Full Recon Handler (Phase 2) ──────────────
+
+  const handleAggressiveRecon = async () => {
+    if (!homepageUrl) return;
+    setAggressiveReconRunning(true);
+    setAggressiveReconStatus('Initializing full aggressive recon...');
+    setAggressiveReconResult(null);
+
+    try {
+      setAggressiveReconStatus('Scanning team pages for employees...');
+      const result = await runFullAggressiveRecon(company.basic.name, homepageUrl);
+      
+      setAggressiveReconResult(result);
+      
+      // Merge extracted people into the People tab state
+      if (result.extractedPeople.length > 0) {
+        const newRoleMap: RoleMapEntry[] = result.extractedPeople.map(p => ({
+          roleType: inferRoleType(p.role),
+          roleTitle: p.role || p.name,
+          department: p.department,
+          evidence: p.evidence,
+          confidence: p.confidence,
+          sourceType: 'company_team_page',
+          sourceUrl: p.sourceUrl,
+        }));
+        
+        setPeopleRoleMap(prev => {
+          const existing = new Map(prev.map(r => [r.roleTitle, r]));
+          for (const r of newRoleMap) {
+            if (!existing.has(r.roleTitle)) existing.set(r.roleTitle, r);
+          }
+          return Array.from(existing.values());
+        });
+        setPeopleSourceMode('recon');
+        setPublicPeopleNotes(`Aggressive recon: ${result.extractedPeople.length} people extracted`);
+        setPublicLeadershipText(`Extracted from team pages: ${result.extractedPeople.map(p => p.name).join(', ')}`);
+      }
+
+      // Auto-generate stakeholders from extracted people
+      if (result.generatedStakeholders.length > 0) {
+        const existingIds = new Set(company.stakeholders.map(s => s.role.toLowerCase()));
+        const newStakeholders = result.generatedStakeholders.filter(
+          s => !existingIds.has(s.role.toLowerCase())
+        );
+        if (newStakeholders.length > 0) {
+          updateCompany(company.id, {
+            stakeholders: [...company.stakeholders, ...newStakeholders],
+          });
+          setGeneratedStakeholders(newStakeholders);
+          setStakeholderGenMessage(
+            `✅ Created ${newStakeholders.length} stakeholder records from aggressive recon`
+          );
+        }
+      }
+
+      // Persist recon URL discovery results
+      if (homepageUrl) {
+        const urls = discoverPublicUrls(homepageUrl);
+        if (urls.length > 0 && discoveredUrls.length === 0) {
+          setDiscoveredUrls(urls);
+        }
+      }
+
+      setScanStatus('done');
+      setAggressiveReconStatus(result.summary);
+      showToast(`✅ ${result.summary}`, 'success');
+      
+      // Navigate to People tab to show results
+      setActiveTab('people');
+    } catch (err) {
+      setAggressiveReconStatus(`Recon failed: ${String(err)}`);
+      showToast(`❌ Aggressive recon failed: ${String(err)}`, 'error');
+    } finally {
+      setAggressiveReconRunning(false);
+    }
+  };
+
+  // Helper: infer role type from role string
+  function inferRoleType(role: string): RoleMapEntry['roleType'] {
+    const lower = role.toLowerCase();
+    if (/\b(ceo|cto|cfo|coo|founder|president|chief|owner)\b/i.test(lower)) return 'executive_founder';
+    if (/\b(sales|account|bdr|sdr|revenue|gtm)\b/i.test(lower)) return 'sales_gtm';
+    if (/\b(operations|ops|logistics|supply|facilities)\b/i.test(lower)) return 'operations';
+    if (/\b(finance|accounting|cfo|controller|treasurer)\b/i.test(lower)) return 'finance_admin';
+    if (/\b(support|customer|service|help|client)\b/i.test(lower)) return 'support';
+    if (/\b(engineer|developer|architect|product|technical|cto)\b/i.test(lower)) return 'technical_product';
+    if (/\b(security|compliance|risk|audit)\b/i.test(lower)) return 'security_compliance';
+    return 'unknown_decision_maker_gap';
+  }
+
   const handleAddExtraUrl = () => {
     if (!extraUrls.trim()) return;
     const newUrls = extraUrls.split('\n').filter(Boolean);
@@ -205,7 +309,65 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     ));
   };
 
-  // ─── Step 2: Fetch & Analyze ────────────────────────────────
+  // ─── Per-URL Paste Analysis ─────────────────────────────
+
+  const handleAnalyzePastedSingleUrl = async (urlId: string) => {
+    const urlInfo = discoveredUrls.find(u => u.urlId === urlId);
+    if (!urlInfo?.fetchedText) return;
+
+    setAnalyzingUrlId(urlId);
+    setDiscoveredUrls(prev => prev.map(u =>
+      u.urlId === urlId ? { ...u, status: 'analyzing' as const } : u
+    ));
+
+    try {
+      const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
+      const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
+
+      const newTools = inferToolsFromText(urlInfo.fetchedText, urlInfo.url);
+
+      // Merge tools (deduplicate by toolName, prefer Detected over Inferred)
+      setDetectedTools(prev => {
+        const toolMap = new Map<string, DetectedTool>();
+        for (const t of [...prev, ...newTools]) {
+          const existing = toolMap.get(t.toolName);
+          if (!existing || (t.detectionMethod === 'Detected' && existing.detectionMethod === 'Inferred')) {
+            toolMap.set(t.toolName, t);
+          }
+        }
+        return Array.from(toolMap.values());
+      });
+
+      // Run workflow inference using current tool context
+      const currentTools = detectedTools;
+      const newWorkflows = inferWorkflowsFromText(urlInfo.fetchedText, urlInfo.url, currentTools);
+
+      setInferredWorkflows(prev => {
+        const wfMap = new Map<string, InferredWorkflow>();
+        for (const w of [...prev, ...newWorkflows]) {
+          const existing = wfMap.get(w.workflowName);
+          if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);
+        }
+        return Array.from(wfMap.values());
+      });
+
+      const charCount = urlInfo.fetchedText.length.toLocaleString();
+      setDiscoveredUrls(prev => prev.map(u =>
+        u.urlId === urlId ? {
+          ...u,
+          status: 'pasted' as const,
+          notes: `Pasted — ${charCount} chars analyzed`,
+        } : u
+      ));
+    } catch (err) {
+      console.error('Pasted URL analysis error:', err);
+      setDiscoveredUrls(prev => prev.map(u =>
+        u.urlId === urlId ? { ...u, status: 'failed' as const, notes: 'Analysis of pasted text failed' } : u
+      ));
+    } finally {
+      setAnalyzingUrlId(null);
+    }
+  };
 
   const handleFetchAndAnalyze = async () => {
     setScanStatus('fetching');
@@ -218,30 +380,39 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
 
+    // Lazy-import content quality
+    const { classifyFetchResult, classifySourceWeight, cleanContentForInference, shouldExcludeFromInference, shouldSuppressWorkflowInference } = await import('../services/contentQuality');
+
     for (let i = 0; i < urlsToScan.length; i++) {
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
-      const result = await fetchPublicUrl(urlInfo.url);
-      if (result.success && result.html) {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId
-            ? { ...u, status: 'scanned', fetchedText: (result.text || '').slice(0, settings.maxCharsPerPage), fetchSourceType: 'browser-fetch' }
-            : u
-        );
-        allPageTexts.push({ text: result.text || '', url: urlInfo.url, html: result.html });
+      const result = await fetchWithCorsFallback(urlInfo.url);
+
+      // Use content quality classifier
+      const classification = classifyFetchResult(urlInfo.url, result.html, result.text, result.httpStatus, result.error, result.blocked);
+      const sourceWeight = classifySourceWeight(urlInfo.pageType, classification.status, result.fetchMethod);
+
+      updatedUrls = updatedUrls.map(u =>
+        u.urlId === urlInfo.urlId ? {
+          ...u,
+          status: classification.status,
+          notes: classification.notes,
+          httpStatus: classification.httpStatus,
+          contentLength: classification.contentLength,
+          sourceWeight,
+          fetchedText: result.success ? (result.text || '').slice(0, settings.maxCharsPerPage) : u.fetchedText,
+          fetchSourceType: result.fetchMethod || u.fetchSourceType,
+        } : u
+      );
+
+      if (result.success && result.html && !shouldExcludeFromInference(classification.status, sourceWeight)) {
+        const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
+        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html });
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
-          localDetected.push(...inferToolsFromText(result.text || '', urlInfo.url));
+          localDetected.push(...inferToolsFromText(cleanedText, urlInfo.url));
         }
-      } else if (result.blocked) {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId ? { ...u, status: 'blocked', notes: result.error || 'Blocked' } : u
-        );
-      } else {
-        updatedUrls = updatedUrls.map(u =>
-          u.urlId === urlInfo.urlId ? { ...u, status: 'failed', notes: result.error || 'Failed' } : u
-        );
       }
       if (i < urlsToScan.length - 1) {
         await new Promise(r => setTimeout(r, settings.scanDelayMs));
@@ -461,6 +632,18 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       setPeopleMilestoneSignals(result.milestoneSignals);
       setPeopleOutreachAngles(result.outreachAngles);
       setPeopleDiscoveryQuestions(result.discoveryQuestions);
+
+      // ── Extract actual person names from the pasted text ──
+      try {
+        const mentions = extractStakeholderMentions(text);
+        setExtractedStakeholderMentions(mentions);
+        const employees = extractEmployeesFromLinkedInText(text, company.basic.name);
+        const employeeNames = employees.filter(e => e.name && e.name.length > 3).map(e => e.name!);
+        const allNames = [...new Set([...mentions.map(m => m.name), ...employeeNames])];
+        setExtractedPersonNames(allNames);
+      } catch {
+        // Extraction is best-effort; don't block the pipeline
+      }
       setPublicPeopleNotes(text.slice(0, 2000));
       setPeopleSourceMode('manual');
       const roleTitles = result.roleMap.map(r => r.roleTitle).join(', ');
@@ -507,6 +690,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     setPeopleMilestoneSignals([]);
     setPeopleOutreachAngles([]);
     setPeopleDiscoveryQuestions([]);
+    setExtractedPersonNames([]);
+    setExtractedStakeholderMentions([]);
     setPublicPeopleNotes('');
     setPublicLeadershipText('');
     setPeopleSourceMode('none');
@@ -530,39 +715,51 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
   };
   const handleGenerateStakeholdersFromPeople = () => {
-    // Use current state or fallback to existing recon
     const hyps = peopleStakeholderHyps.length > 0
       ? peopleStakeholderHyps
       : (company.reconFindings?.peopleSignals?.stakeholderHypotheses || []);
 
     if (hyps.length === 0) {
-      setStakeholderGenMessage('❌ No people stakeholder hypotheses available yet. Generate People Signals first.');
+      setStakeholderGenMessage('No people detected — paste LinkedIn/team page text in the People tab first.');
       setGeneratedStakeholders([]);
       return;
     }
 
-    // Avoid duplicates: skip if same role+category already exists
+    const hasLinkedInSource =
+      (peopleSourceUrl && peopleSourceUrl.toLowerCase().includes('linkedin')) ||
+      sourceQueue.some(s => s.sourceUrl.toLowerCase().includes('linkedin')) ||
+      sourceQueue.some(s => s.sourceType.startsWith('linkedin'));
+    const hasEmail = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/.test(manualPeopleText);
+    const accessStatus: AccessStatus = hasEmail ? 'email_known' : hasLinkedInSource ? 'researchable' : 'unknown';
+
     const existingRoles = new Set(company.stakeholders.map(s => `${s.role}::${s.category}`));
     const newStakeholders = hyps
       .filter(h => {
         const cat = h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const);
         return !existingRoles.has(`${h.roleTitle}::${cat}`);
       })
-      .map((h, i) => ({
-        id: `stk-people-${Date.now()}-${i}`,
-        category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
-        name: undefined as string | undefined,
-        role: h.roleTitle,
-        department: h.department,
-        likelyPriorities: h.likelyConcern,
-        likelyObjections: 'Unknown — validate during discovery',
-        whatTheyCareAbout: h.likelyConcern,
-        bestTalkTrack: h.likelyDiscoveryQuestion,
-        bestProof: 'To be determined during discovery',
-        buyingInfluence: h.likelyBuyingInfluence,
-        accessStatus: 'unknown' as const,
-        confidence: h.confidence,
-      }));
+      .map((h, i) => {
+        const roleWord = h.roleTitle.split(' ')[0].toLowerCase();
+        const matchingMention = extractedStakeholderMentions.find(m =>
+          m.role && m.role.toLowerCase().includes(roleWord)
+        );
+        const matchedName = matchingMention?.name || extractedPersonNames[i];
+        return {
+          id: `stk-people-${Date.now()}-${i}`,
+          category: h.likelyBuyingInfluence >= 4 ? ('economic_buyer' as const) : ('influencer' as const),
+          name: matchedName,
+          role: h.roleTitle,
+          department: h.department,
+          likelyPriorities: h.likelyConcern,
+          likelyObjections: 'Unknown — validate during discovery',
+          whatTheyCareAbout: h.likelyConcern,
+          bestTalkTrack: h.likelyDiscoveryQuestion,
+          bestProof: 'To be determined during discovery',
+          buyingInfluence: h.likelyBuyingInfluence,
+          accessStatus,
+          confidence: h.confidence,
+        };
+      });
 
     if (newStakeholders.length === 0) {
       setStakeholderGenMessage('✅ Stakeholders already exist for these roles — no duplicates added.');
@@ -587,9 +784,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       },
     });
 
-    // Set preview stakeholders and success message
     setGeneratedStakeholders(newStakeholders);
-    setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
+    const namedStakeholders = newStakeholders.filter(s => s.name);
+    if (namedStakeholders.length > 0) {
+      const names = namedStakeholders.map(s => `${s.name} (${s.role})`).join(', ');
+      setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''}: ${names}`);
+    } else if (extractedPersonNames.length > 0) {
+      setStakeholderGenMessage(`⚠️ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} but names not available — roles only`);
+    } else {
+      setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
+    }
   };
 
   // ─── CRM Brief & Copy Handler ────────────────────────────────
@@ -600,7 +804,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       '='.repeat(50),
       '',
     ];
-
     // People Intelligence section
     if (hasPeopleSignals) {
       brief.push('PEOPLE INTELLIGENCE');
@@ -695,6 +898,113 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       brief.push('No recon data available yet. Run URL discovery or generate People Signals first.');
       brief.push('');
     }
+
+    return brief.join('\n');
+  };
+
+  const generateSalesBriefText = (): string => {
+    const brief: string[] = [
+      `📋 PRE-CALL BRIEF: ${company.basic.name}`,
+      '='.repeat(55),
+      '',
+      `Prepared: ${new Date().toLocaleDateString()}`,
+      `Industry: ${company.basic.industry || 'Unknown'}`,
+      `Website: ${company.basic.website || 'N/A'}`,
+      `Location: ${company.basic.location || 'Unknown'}`,
+      '',
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    ];
+
+    // Company Overview
+    brief.push('');
+    brief.push('🏢 COMPANY OVERVIEW');
+    brief.push(`  ${company.business.productsServices || company.basic.name + ' — details to be discovered.'}`);
+    if (company.business.targetCustomers) {
+      brief.push(`  Target: ${company.business.targetCustomers}`);
+    }
+
+    // Key People / Stakeholders
+    if (hasPeopleSignals || company.stakeholders.length > 0) {
+      brief.push('');
+      brief.push('👥 KEY PEOPLE');
+      if (peopleRoleMap.length > 0) {
+        peopleRoleMap.slice(0, 5).forEach(r => {
+          brief.push(`  ${r.roleTitle} (${r.department}) [${r.confidence}]`);
+        });
+      }
+      if (peopleStakeholderHyps.length > 0) {
+        brief.push('');
+        brief.push('  Stakeholder Hypotheses:');
+        peopleStakeholderHyps.slice(0, 5).forEach(h => {
+          brief.push(`    ${h.roleTitle} — ${h.likelyConcern.slice(0, 80)}`);
+          brief.push(`    ❓ ${h.likelyDiscoveryQuestion}`);
+        });
+      }
+      if (company.stakeholders.length > 0) {
+        brief.push(`  ${company.stakeholders.length} stakeholder records in profile`);
+      }
+    }
+
+    // Tools & Tech Stack
+    if (detectedTools.length > 0) {
+      brief.push('');
+      brief.push('🔧 TECH STACK');
+      detectedTools.slice(0, 8).forEach(t => {
+        brief.push(`  ${t.toolName} (${t.category}) [${t.confidence}]`);
+      });
+    }
+
+    // Pain Points / Workflows
+    if (inferredWorkflows.length > 0) {
+      brief.push('');
+      brief.push('⚠️ LIKELY PAIN POINTS');
+      inferredWorkflows.slice(0, 5).forEach(w => {
+        brief.push(`  ${w.workflowName} (${w.department})`);
+        brief.push(`    Bottleneck: ${w.possibleBottleneck}`);
+        brief.push(`    ❓ ${w.discoveryQuestion}`);
+      });
+    }
+
+    // Openings
+    if (openings.length > 0) {
+      brief.push('');
+      brief.push('🎯 TOP OPENINGS');
+      openings.slice(0, 5).forEach((o, i) => {
+        brief.push(`  ${i + 1}. ${o.title}`);
+        brief.push(`     First Line: ${o.firstLine}`);
+        brief.push(`     ❓ ${o.discoveryQuestion}`);
+      });
+    }
+
+    // Hiring Signals
+    if (peopleHiringSignals.length > 0) {
+      brief.push('');
+      brief.push('📋 HIRING SIGNALS');
+      peopleHiringSignals.slice(0, 5).forEach(h => {
+        brief.push(`  ${h.openRole || h.roleGap} (${h.department})`);
+      });
+    }
+
+    // Discovery Questions summary
+    if (peopleDiscoveryQuestions.length > 0) {
+      brief.push('');
+      brief.push('❓ DISCOVERY QUESTIONS');
+      peopleDiscoveryQuestions.slice(0, 5).forEach(q => {
+        brief.push(`  [${q.targetRole}] ${q.question}`);
+      });
+    }
+
+    // Suggested Demo
+    const prompt = openings.find(o => o.suggestedBuildPrompt);
+    if (prompt) {
+      brief.push('');
+      brief.push('🛠️ SUGGESTED DEMO');
+      brief.push(`  ${prompt.suggestedBuildPrompt}`);
+    }
+
+    brief.push('');
+    brief.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    brief.push('Generated by Natively Profit Scout — Auto-Fill Recon');
 
     return brief.join('\n');
   };
@@ -917,14 +1227,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
         }}
       />
 
-      <div style={{
-        background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)',
-        borderRadius: 8, padding: '10px 16px', marginBottom: 20, fontSize: 12, color: '#94a3b8'
-      }}>
-        🔒 <strong>Recon Safety Notice:</strong> This scanner is designed for public business research only.
-        It does not bypass logins, scrape private pages, or access restricted systems.
-        If a source cannot be fetched safely, paste public text manually.
-      </div>
 
       {/* Tabs */}
       <div className="tabs" style={{ flexWrap: 'wrap', gap: 0 }}>
@@ -967,18 +1269,35 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                 >
                   {scanStatus === 'discovering' ? 'Discovering...' : 'Discover URLs'}
                 </button>
+                <button
+                  className="btn btn-accent"
+                  onClick={handleAggressiveRecon}
+                  disabled={!homepageUrl || aggressiveReconRunning}
+                  style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', border: 'none' }}
+                >
+                  {aggressiveReconRunning ? '⚡ Recon Running...' : '🚀 Full Aggressive Recon'}
+                </button>
               </div>
             </div>
 
-            {fetchProgress && (
-              <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
-                {fetchProgress}
+            {aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(245,158,11,0.08)', borderRadius: 6,
+                border: '1px solid rgba(245,158,11,0.3)', marginBottom: 12, fontSize: 12, color: '#f59e0b',
+              }}>
+                ⚡ {aggressiveReconStatus}
               </div>
             )}
 
-            {scanError && (
-              <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
-                ❌ {scanError}
+            {aggressiveReconResult && !aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(16,185,129,0.08)', borderRadius: 6,
+                border: '1px solid rgba(16,185,129,0.3)', marginBottom: 12, fontSize: 12, color: '#10b981',
+              }}>
+                ✅ {aggressiveReconStatus}
+                <div style={{ marginTop: 4, fontSize: 11, color: '#94a3b8' }}>
+                  View results in the People tab →
+                </div>
               </div>
             )}
 
@@ -1008,6 +1327,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                   <div className="flex" style={{ gap: 8, fontSize: 11, color: '#64748b' }}>
                     <span className="badge badge-blue">{discoveredUrls.filter(u => u.status === 'unscanned').length} pending</span>
                     <span className="badge badge-green">{discoveredUrls.filter(u => u.status === 'scanned').length} scanned</span>
+                    <span className="badge badge-purple">{discoveredUrls.filter(u => u.status === 'pasted').length} pasted</span>
                     <span className="badge badge-amber">{discoveredUrls.filter(u => u.status === 'blocked').length} blocked</span>
                     <span className="badge badge-red">{discoveredUrls.filter(u => u.status === 'failed').length} failed</span>
                   </div>
@@ -1063,9 +1383,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               <div style={{ textAlign: 'center', padding: 32 }}>
                 <div style={{ fontSize: 32, marginBottom: 12 }}>📡</div>
                 <div style={{ fontSize: 14, color: '#94a3b8', marginBottom: 8 }}>
-                  {scanStatus === 'fetching' ? 'Fetching pages...' : 'Analyzing content...'}
+                  {scanStatus === 'fetching' ? 'Proxy crawling pages...' : 'Extracting intelligence...'}
                 </div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>{fetchProgress}</div>
                 <div style={{
                   width: 200, height: 4, background: '#2a3a5c', borderRadius: 2,
                   margin: '12px auto', overflow: 'hidden',
@@ -1079,16 +1398,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
             ) : (
               <>
                 {discoveredUrls.length === 0 ? (
-                  /* ─── Fallback: Manual Homepage Paste ────── */
                   <div style={{
                     padding: 16, background: '#0f1525', borderRadius: 6,
                     border: '1px solid #2a3a5c', marginBottom: 16,
                   }}>
                     <div style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
-                      📝 Manual Homepage Paste
+                      📡 No sources discovered yet
                     </div>
                     <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
-                      No URLs were discovered or state was lost. Paste your company homepage text below to analyze.
+                      Send the proxy scanner to aggressively discover public URLs from {homepageUrl}.
+                      If the site is JS-heavy, the proxy will still attempt a raw fetch.
                     </div>
                     <div style={{ fontSize: 11, color: '#3b82f6', marginBottom: 8 }}>
                       URL: {homepageUrl}
@@ -1101,34 +1420,39 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       value={manualPasteText}
                       onChange={e => setManualPasteText(e.target.value)}
                     />
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => {
-                        const text = manualPasteText.trim();
-                        if (!text) return;
-                        const newEntry: ReconDiscoveredUrl = {
-                          urlId: `url-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                          url: homepageUrl,
-                          pageType: 'Homepage',
-                          discoveryMethod: 'user-added',
-                          status: 'pasted',
-                          confidence: 'High' as ConfidenceLevel,
-                          notes: 'Manually pasted homepage text',
-                          fetchedText: text,
-                          fetchSourceType: 'pasted-public-page',
-                        };
-                        setDiscoveredUrls([newEntry]);
-                        setManualPasteText('');
-                      }}
-                    >
-                      Analyze Pasted Homepage
-                    </button>
+                    <div className="flex" style={{ gap: 8 }}>
+                      <button className="btn btn-primary" onClick={handleDiscover} disabled={scanStatus === 'discovering'}>
+                        {scanStatus === 'discovering' ? 'Aggressively scanning...' : '🚀 Aggressive Recon Scan'}
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          const text = manualPasteText.trim();
+                          if (!text) return;
+                          const newEntry: ReconDiscoveredUrl = {
+                            urlId: `url-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            url: homepageUrl,
+                            pageType: 'Homepage',
+                            discoveryMethod: 'user-added',
+                            status: 'pasted',
+                            confidence: 'High' as ConfidenceLevel,
+                            notes: 'Manually pasted homepage text',
+                            fetchedText: text,
+                            fetchSourceType: 'pasted-public-page',
+                          };
+                          setDiscoveredUrls([newEntry]);
+                          setManualPasteText('');
+                        }}
+                      >
+                        📋 Paste Override
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <>
                     <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
                       {discoveredUrls.filter(u => u.status === 'unscanned').length} URLs ready to scan.
-                      URLs blocked by CORS can be pasted manually.
+                      Proxy will attempt all URLs; paste is available if it fails.
                     </p>
 
                     <div style={{ maxHeight: 400, overflow: 'auto', marginBottom: 16 }}>
@@ -1160,24 +1484,57 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                               {urlInfo.status}
                             </span>
                           </div>
-                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned') && (
+                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned' || urlInfo.status === 'analyzing') && (
                             <div style={{ marginTop: 4 }}>
                               {urlInfo.status === 'blocked' && (
-                                <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 4 }}>
-                                  ⚠️ {urlInfo.notes || 'Blocked by CORS'}
+                                <div style={{
+                                  padding: '8px 10px',
+                                  background: 'rgba(245, 158, 11, 0.08)',
+                                  border: '1px solid rgba(245, 158, 11, 0.25)',
+                                  borderRadius: 4,
+                                  marginBottom: 8,
+                                  fontSize: 11,
+                                }}>
+                                  <div style={{ color: '#f59e0b', fontWeight: 600, marginBottom: 4 }}>
+                                    ⚠️ Login-walled page — couldn't fetch automatically
+                                  </div>
+                                  <div style={{ color: '#e2e8f0', fontSize: 11 }}>
+                                    This page requires authentication. Paste the visible page content below — we'll analyze it the same way.
+                                  </div>
                                 </div>
                               )}
-                              <textarea
-                                className="input"
-                                placeholder="Paste page text or HTML here if fetch failed..."
-                                rows={2}
-                                style={{ fontSize: 11, minHeight: 40 }}
-                                onBlur={e => {
-                                  if (e.target.value.trim()) {
-                                    handlePasteUrlContent(urlInfo.urlId, e.target.value);
+                              {urlInfo.status === 'analyzing' && (
+                                <div style={{
+                                  padding: '6px 10px',
+                                  background: 'rgba(139, 92, 246, 0.08)',
+                                  border: '1px solid rgba(139, 92, 246, 0.25)',
+                                  borderRadius: 4,
+                                  marginBottom: 8,
+                                  fontSize: 11,
+                                  color: '#8b5cf6',
+                                  display: 'flex', alignItems: 'center', gap: 8,
+                                }}>
+                                  <span style={{ animation: 'spin 1s linear infinite' }}>⟳</span> Analyzing pasted content...
+                                </div>
+                              )}
+                              {urlInfo.status !== 'analyzing' && (
+                                <textarea
+                                  className="input"
+                                  placeholder={urlInfo.status === 'blocked'
+                                    ? 'Paste the visible text from this page here...'
+                                    : 'Or paste page text here if automatic fetch fails...'
                                   }
-                                }}
-                              />
+                                  rows={urlInfo.status === 'blocked' ? 5 : 3}
+                                  style={{ fontSize: 11 }}
+                                  onBlur={e => {
+                                    const val = e.target.value.trim();
+                                    if (val) {
+                                      handlePasteUrlContent(urlInfo.urlId, val);
+                                      handleAnalyzePastedSingleUrl(urlInfo.urlId);
+                                    }
+                                  }}
+                                />
+                              )}
                             </div>
                           )}
                         </div>
@@ -1431,34 +1788,102 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
             {peopleRoleMap.length > 0 && <span className="badge badge-purple" style={{ fontSize: 10 }}>{peopleRoleMap.length} roles</span>}
           </div>
           <div className="card-body">
-
-            {/* Safety Notice */}
-            <div style={{
-              background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)',
-              borderRadius: 6, padding: '8px 12px', marginBottom: 16, fontSize: 11, color: '#94a3b8'
-            }}>
-              🛡️ <strong>Safety:</strong> Paste public business text only. Do not paste private profiles, private messages, login-only content, sensitive personal data, or anything obtained through restricted access. This tool does NOT scrape or log into any platform.
-            </div>
-
-            {/* LinkedIn Source Assistant Panel */}
             <LinkedInSourceAssistant
               companyName={company.basic.name}
               onAutoFill={handleLinkedInAutoFill}
             />
+            {aggressiveReconResult && !aggressiveReconRunning && (
+              <div style={{
+                padding: 12, background: 'rgba(16,185,129,0.06)', borderRadius: 6,
+                border: '1px solid rgba(16,185,129,0.25)', marginBottom: 16,
+              }}>
+                <div style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginBottom: 8 }}>
+                  ⚡ Aggressive Recon Complete
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
+                  {aggressiveReconResult.extractedPeople.length > 0 && (
+                    <div>👤 {aggressiveReconResult.extractedPeople.length} people extracted from team pages</div>
+                  )}
+                  {aggressiveReconResult.linkedInJobs.length > 0 && (
+                    <div>💼 {aggressiveReconResult.linkedInJobs.length} LinkedIn job postings found</div>
+                  )}
+                  {aggressiveReconResult.linkedInCompany?.description && (
+                    <div>🏢 LinkedIn company profile captured</div>
+                  )}
+                  {aggressiveReconResult.searchIntel.length > 0 && (
+                    <div>🔍 {aggressiveReconResult.searchIntel.reduce((sum, s) => sum + s.signals.length, 0)} intel signals from web search</div>
+                  )}
+                  {aggressiveReconResult.generatedStakeholders.length > 0 && (
+                    <div>✅ {aggressiveReconResult.generatedStakeholders.length} stakeholder records generated</div>
+                  )}
+                  {aggressiveReconResult.errors.length > 0 && (
+                    <div style={{ color: '#f59e0b', marginTop: 4 }}>
+                      ⚠️ {aggressiveReconResult.errors.length} errors (non-blocking)
+                    </div>
+                  )}
+                </div>
+                {/* LinkedIn Jobs Preview */}
+                {aggressiveReconResult.linkedInJobs.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
+                      💼 LinkedIn Job Postings
+                    </div>
+                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
+                      {aggressiveReconResult.linkedInJobs.slice(0, 10).map((job, i) => (
+                        <div key={i} style={{
+                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
+                        }}>
+                          <span style={{ color: '#e2e8f0', flex: 1 }} className="truncate">{job.title}</span>
+                          <span className="badge badge-amber" style={{ fontSize: 8 }}>{job.department}</span>
+                          {job.techStackMentions.length > 0 && (
+                            <span style={{ color: '#3b82f6', fontSize: 8 }}>
+                              {job.techStackMentions.slice(0, 3).join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Search Intel Preview */}
+                {aggressiveReconResult.searchIntel.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
+                      🔍 Web Search Intelligence
+                    </div>
+                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
+                      {aggressiveReconResult.searchIntel.flatMap(s => s.signals).slice(0, 10).map((signal, i) => (
+                        <div key={i} style={{
+                          padding: '4px 8px', background: '#0f1525', borderRadius: 3,
+                          fontSize: 10, display: 'flex', alignItems: 'center', gap: 6,
+                        }}>
+                          <span style={{
+                            fontSize: 8, padding: '1px 4px', borderRadius: 2, flexShrink: 0,
+                            background: signal.confidence === 'High' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.12)',
+                            color: signal.confidence === 'High' ? '#10b981' : '#f59e0b',
+                          }}>
+                            {signal.type.replace(/_/g, ' ')}
+                          </span>
+                          <span className="truncate" style={{ color: '#e2e8f0', flex: 1 }}>{signal.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* ChatGPT JSON Import */}
             <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
-
             {/* People Source Discovery Section */}
             <div style={{
               background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.2)',
               borderRadius: 6, padding: '12px 14px', marginBottom: 16,
             }}>
               <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 8 }}>
-                🧭 Public People Source Discovery
-              </div>
-              <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 10 }}>
-                Automatically discover public people/company sources from the company name and website. No scraping — sources open in your browser for manual review.
+                Auto-discover people intelligence sources. Our proxy scanner will aggressively fetch LinkedIn jobs, team pages, news, and public social profiles.
+                Tip: Paste is always available as a fallback for JS-heavy or login-walled pages.
               </div>
               <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button
@@ -1466,24 +1891,19 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                   onClick={handleDiscoverPeopleSources}
                   disabled={sourceDiscovering}
                 >
-                  {sourceDiscovering ? 'Discovering...' : '🔍 Discover People Sources'}
+                  {sourceDiscovering ? 'Discovering...' : '🔍 Aggressive Source Discovery'}
                 </button>
                 <button
                   className="btn btn-secondary btn-sm"
                   onClick={handleGeneratePreliminarySignals}
                   disabled={reconGenerating}
                 >
-                  {reconGenerating ? 'Generating...' : '📊 Generate People Signals from Existing Recon'}
+                  {reconGenerating ? 'Generating...' : '📊 Extract Signals from Recon Data'}
                 </button>
-                <button className="btn btn-secondary btn-sm" onClick={handlePasteFromClipboard}>
-                  📋 Paste from Clipboard
-                </button>
-              </div>
-              {clipboardStatus && (
                 <div style={{ marginTop: 8, fontSize: 11, color: clipboardStatus.startsWith('✅') ? '#10b981' : '#f59e0b' }}>
                   {clipboardStatus}
                 </div>
-              )}
+              </div>
             </div>
 
             {/* Source Queue */}
@@ -1500,8 +1920,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                     const isGuessedUrl = !isHomepage && (
                       urlLower.includes('/team') || urlLower.includes('/about') ||
                       urlLower.includes('/leadership') || urlLower.includes('/management') ||
-                      urlLower.includes('/careers') || urlLower.includes('/jobs') ||
-                      urlLower.includes('/news') || urlLower.includes('/press') ||
                       urlLower.includes('/blog') || urlLower.includes('/contact')
                     );
                     const isGoogleSearch = urlLower.includes('google.com/search');
@@ -1515,7 +1933,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       sourceLabel = 'Confirmed base website';
                       labelColor = '#10b981';
                     } else if (isGuessedUrl) {
-                      sourceLabel = 'Guessed URL';
+                      sourceLabel = 'Inferred Source';
                       labelColor = '#f59e0b';
                     } else if (isLinkedInSearch) {
                       sourceLabel = 'LinkedIn search';
@@ -1524,16 +1942,16 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                       sourceLabel = 'LinkedIn candidate URL';
                       labelColor = '#8b5cf6';
                     } else if (isGoogleSearch) {
-                      sourceLabel = 'Search link';
+                      sourceLabel = 'Search Target';
                       labelColor = '#f59e0b';
                     } else if (isCrunchbaseSearch) {
-                      sourceLabel = 'Search link';
+                      sourceLabel = 'Search Target';
                       labelColor = '#f59e0b';
                     } else if (item.confidence === 'High') {
                       sourceLabel = 'Confirmed';
                       labelColor = '#10b981';
                     } else {
-                      sourceLabel = 'Guessed URL';
+                      sourceLabel = 'Inferred Source';
                       labelColor = '#f59e0b';
                     }
 
@@ -1988,6 +2406,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                   </button>
                   <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('CRM-Ready Brief', generateCrmBriefText)}>
                     📋 CRM-Ready Brief
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('Sales Call Brief', generateSalesBriefText)}>
+                    📞 Sales Call Brief
                   </button>
                   <button className="btn btn-ghost btn-sm" onClick={() => handleCopyToClipboard('First Outreach Lines', () => {
                     return openings.map(o =>

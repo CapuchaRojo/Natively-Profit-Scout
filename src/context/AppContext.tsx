@@ -1,16 +1,30 @@
 // ============================================================
-// AppContext — React Context + localStorage Persistence
+// AppContext — React Context + localStorage + Supabase Persistence
 // ============================================================
-import React, { createContext, useContext, useReducer, useEffect, useCallback, type ReactNode } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import type { Company, AppSettings, DashboardMetrics, NewAnalysisData, PublicIntelSource, PublicIntelSignal, PublicIntelOpening } from '../types';
 import { sampleCompanies } from '../data/sampleCompanies';
 import { generateFullAnalysis, calculateOpportunityScore, calculateFitScore, calculatePainScore, calculateUrgencyScore } from '../services/analysisEngine';
 import { generateOnePageBrief } from '../services/exportUtilities';
+import {
+  loadAllCompanies,
+  loadSettings,
+  saveSettings,
+  upsertCompany,
+  deleteCompanyFromDb,
+  upsertAllCompanies,
+  isSupabaseReachable,
+} from '../services/dataSync';
+
+// ============================================================
+// State & Reducer
+// ============================================================
 
 interface AppState {
   companies: Company[];
   settings: AppSettings;
   currentCompanyId: string | null;
+  dbSynced: boolean;
 }
 
 type AppAction =
@@ -19,7 +33,8 @@ type AppAction =
   | { type: 'UPDATE_COMPANY'; payload: { id: string; updates: Partial<Company> } }
   | { type: 'DELETE_COMPANY'; payload: string }
   | { type: 'SET_CURRENT_COMPANY'; payload: string | null }
-  | { type: 'SET_SETTINGS'; payload: AppSettings };
+  | { type: 'SET_SETTINGS'; payload: AppSettings }
+  | { type: 'SET_DB_SYNCED'; payload: boolean };
 
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
@@ -46,48 +61,78 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, currentCompanyId: action.payload };
     case 'SET_SETTINGS':
       return { ...state, settings: action.payload };
+    case 'SET_DB_SYNCED':
+      return { ...state, dbSynced: action.payload };
     default:
       return state;
   }
 }
 
+// ============================================================
+// localStorage helpers
+// ============================================================
+
 const STORAGE_KEY = 'natively-profit-scout-data';
 
-function loadState(): AppState {
+function normalizeCompany(c: Company): Company {
+  return {
+    ...c,
+    publicIntelSources: c.publicIntelSources || [],
+    publicIntelSignals: c.publicIntelSignals || [],
+    publicIntelOpenings: c.publicIntelOpenings || [],
+    painPoints: c.painPoints || [],
+    stakeholders: c.stakeholders || [],
+    toolMap: c.toolMap || [],
+    highladerRepurpose: c.highladerRepurpose || [],
+    opportunities: c.opportunities || [],
+    comments: c.comments || [],
+    accountType: c.accountType || 'unknown',
+    productLane: c.productLane || 'unknown',
+    pipelineStatus: c.pipelineStatus || 'new',
+    owner: c.owner || '',
+    priority: c.priority || 'unset',
+    nextAction: c.nextAction || '',
+    nextActionDate: c.nextActionDate || '',
+    lastContactedAt: c.lastContactedAt || '',
+    sourceCampaign: c.sourceCampaign || '',
+    utmSource: c.utmSource || '',
+    utmMedium: c.utmMedium || '',
+    utmCampaign: c.utmCampaign || '',
+    utmContent: c.utmContent || '',
+    hubspotLifecycleStage: c.hubspotLifecycleStage || '',
+    hubspotDealStage: c.hubspotDealStage || '',
+  };
+}
+
+function loadStateFromLocal(): AppState {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      // Ensure all companies have required array fields (defensive against stale localStorage)
-      const companies = (parsed.companies || []).map((c: Company) => ({
-        ...c,
-        publicIntelSources: c.publicIntelSources || [],
-        publicIntelSignals: c.publicIntelSignals || [],
-        publicIntelOpenings: c.publicIntelOpenings || [],
-        painPoints: c.painPoints || [],
-        stakeholders: c.stakeholders || [],
-        toolMap: c.toolMap || [],
-        highladerRepurpose: c.highladerRepurpose || [],
-        opportunities: c.opportunities || [],
-      }));
+      const companies = (parsed.companies || []).map(normalizeCompany);
       return {
         companies,
         settings: { ...defaultSettings, ...parsed.settings },
         currentCompanyId: parsed.currentCompanyId || null,
+        dbSynced: false,
       };
     }
-    const analyzedSamples = sampleCompanies.map(c => generateFullAnalysis({ ...c, id: `${c.id}-${Date.now()}` }));
+    // First run — seed with sample data
+    const analyzedSamples = sampleCompanies.map(c =>
+      generateFullAnalysis({ ...c, id: `${c.id}-${Date.now()}` })
+    );
     return {
       companies: analyzedSamples,
       settings: defaultSettings,
       currentCompanyId: null,
+      dbSynced: false,
     };
   } catch {
-    return { companies: [], settings: defaultSettings, currentCompanyId: null };
+    return { companies: [], settings: defaultSettings, currentCompanyId: null, dbSynced: false };
   }
 }
 
-function saveState(state: AppState): void {
+function saveStateToLocal(state: AppState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       companies: state.companies,
@@ -98,6 +143,10 @@ function saveState(state: AppState): void {
     console.error('Failed to save state:', err);
   }
 }
+
+// ============================================================
+// Defaults
+// ============================================================
 
 const defaultSettings: AppSettings = {
   userName: '',
@@ -125,6 +174,10 @@ const defaultSettings: AppSettings = {
   },
 };
 
+// ============================================================
+// Context
+// ============================================================
+
 interface AppContextType {
   state: AppState;
   createCompany: (data: NewAnalysisData) => Company;
@@ -142,14 +195,81 @@ interface AppContextType {
   addPublicIntelSignals: (companyId: string, signals: PublicIntelSignal[]) => void;
   addPublicIntelOpenings: (companyId: string, openings: PublicIntelOpening[]) => void;
   clearPublicIntelForCompany: (companyId: string) => void;
+  addCompany: (company: Company) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(appReducer, null, loadState);
+// ============================================================
+// Provider
+// ============================================================
 
-  useEffect(() => { saveState(state); }, [state]);
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(appReducer, null, loadStateFromLocal);
+  const isInitialMount = useRef(true);
+
+  // ── Initial Supabase load (runs once on mount) ──
+  useEffect(() => {
+    async function hydrateFromSupabase() {
+      const reachable = await isSupabaseReachable();
+      if (!reachable) {
+        console.log('[AppContext] Supabase unreachable, using localStorage only');
+        dispatch({ type: 'SET_DB_SYNCED', payload: true });
+        return;
+      }
+
+      const [dbCompanies, dbSettings] = await Promise.all([
+        loadAllCompanies(),
+        loadSettings(),
+      ]);
+
+      // If Supabase has data, use it (it's the source of truth after first sync).
+      // Otherwise, push our localStorage data to Supabase.
+      if (dbCompanies.length > 0) {
+        dispatch({ type: 'SET_COMPANIES', payload: dbCompanies.map(normalizeCompany) });
+        console.log(`[AppContext] Loaded ${dbCompanies.length} companies from Supabase`);
+      } else if (state.companies.length > 0) {
+        // Push local data up to Supabase (first-time migration)
+        await upsertAllCompanies(state.companies);
+        console.log(`[AppContext] Migrated ${state.companies.length} companies to Supabase`);
+      }
+
+      if (dbSettings) {
+        dispatch({ type: 'SET_SETTINGS', payload: { ...defaultSettings, ...dbSettings } });
+      } else {
+        await saveSettings(state.settings);
+      }
+
+      dispatch({ type: 'SET_DB_SYNCED', payload: true });
+    }
+
+    hydrateFromSupabase();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Persist to localStorage on every state change ──
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    saveStateToLocal(state);
+  }, [state]);
+
+  // ── Persist to Supabase (debounced per-company on relevant changes) ──
+  useEffect(() => {
+    if (!state.dbSynced) return;
+
+    // We debounce saving to Supabase by 2s to avoid excessive writes
+    const timer = setTimeout(async () => {
+      await upsertAllCompanies(state.companies);
+      await saveSettings(state.settings);
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [state.companies, state.settings, state.dbSynced]);
+
+  // ── Actions ──
 
   const createCompany = useCallback((data: NewAnalysisData): Company => {
     const now = new Date().toISOString();
@@ -160,6 +280,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
       publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
       reconFindings: undefined,
+      comments: [],
+      accountType: 'unknown', productLane: 'unknown', pipelineStatus: 'new',
+      owner: '', priority: 'unset', nextAction: '', nextActionDate: '', lastContactedAt: '',
+      sourceCampaign: '', utmSource: '', utmMedium: '', utmCampaign: '', utmContent: '',
+      hubspotLifecycleStage: '', hubspotDealStage: '',
       createdAt: now, updatedAt: now,
     };
     const analyzed = generateFullAnalysis(newCompany);
@@ -258,11 +383,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'UPDATE_COMPANY', payload: { id: companyId, updates: { publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [], publicIntelSummary: undefined } } });
   }, []);
 
+  const addCompany = useCallback((company: Company) => {
+    dispatch({ type: 'ADD_COMPANY', payload: company });
+  }, []);
+
   const value: AppContextType = {
     state, createCompany, updateCompany, deleteCompany, getCompany, setCurrentCompany,
     updateSettings, regenerateAnalysis, getDashboardMetrics, getOnePageBrief,
     addPublicIntelSource, updatePublicIntelSource, deletePublicIntelSource,
     addPublicIntelSignals, addPublicIntelOpenings, clearPublicIntelForCompany,
+    addCompany,
   };
 
   return (

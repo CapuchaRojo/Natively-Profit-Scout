@@ -331,9 +331,29 @@ export interface Company {
   publicIntelOpenings: PublicIntelOpening[];
   publicIntelSummary?: PublicIntelSummary;
   reconFindings?: ReconFindings;
+  aggressiveRecon?: PersistedAggressiveRecon;
   createdAt: string;
   updatedAt: string;
   isSample?: boolean;
+  // Pipeline Scout fields (v1.0)
+  accountType: AccountType;
+  productLane: ProductLane;
+  pipelineStatus: PipelineStatus;
+  owner: string;
+  priority: 'high' | 'medium' | 'low' | 'unset';
+  nextAction: string;
+  nextActionDate: string;
+  lastContactedAt: string;
+  sourceCampaign: string;
+  utmSource: string;
+  utmMedium: string;
+  utmCampaign: string;
+  utmContent: string;
+  hubspotLifecycleStage: string;
+  hubspotDealStage: string;
+  comments: ScoutComment[];
+  providerProfile?: ProviderProfile;
+  fitScore?: FitScore;
 }
 
 export interface AppSettings {
@@ -589,6 +609,66 @@ export interface ReconFindings {
   status: 'pending' | 'scanned' | 'analyzed' | 'applied';
 }
 
+// ── Persisted Aggressive Recon (v0.9) ──────────────────────
+export interface PersistedAggressiveReconPerson {
+  name: string;
+  role?: string;
+  department: string;
+  evidence: string;
+  sourceUrl: string;
+  confidence: ConfidenceLevel;
+}
+
+export interface PersistedAggressiveReconJob {
+  title: string;
+  department: string;
+  techStackMentions: string[];
+  growthSignal: string;
+  nativelyImplication?: string;
+}
+
+export interface PersistedAggressiveReconCompany {
+  industry?: string;
+  employeeRange?: string;
+  headquarters?: string;
+  description?: string;
+  growthIndicators: string[];
+}
+
+export interface PersistedAggressiveReconSignal {
+  type: string;
+  title: string;
+  snippet?: string;
+  nativelyAngle?: string;
+  url?: string;
+  urgencyLevel?: string;
+  confidence: ConfidenceLevel;
+}
+
+export interface PersistedAggressiveReconQuery {
+  query: string;
+  signals: PersistedAggressiveReconSignal[];
+}
+
+export interface PersistedAggressiveReconUrl {
+  platform: string;
+  url: string;
+  confidence: ConfidenceLevel;
+}
+
+export interface PersistedAggressiveRecon {
+  extractedPeople: PersistedAggressiveReconPerson[];
+  linkedInJobs: PersistedAggressiveReconJob[];
+  linkedInCompany?: PersistedAggressiveReconCompany;
+  searchIntel: PersistedAggressiveReconQuery[];
+  newsIntel: PersistedAggressiveReconQuery[];
+  socialDiscoveryUrls: PersistedAggressiveReconUrl[];
+  linkedInResearchUrls: PersistedAggressiveReconUrl[];
+  summary: string;
+  errors: string[];
+  scannedAt: string;
+}
+
 export interface ReconApiClientSettings {
   enabled: boolean;
   backendUrl: string;
@@ -783,4 +863,126 @@ export interface NamedPerson {
   evidence: string;
   source: string;
   buyerType?: 'economic_buyer' | 'technical_buyer' | 'influencer' | 'champion' | 'operator';
+}
+
+// ============================================================
+// Pipeline Scout Types (v1.0)
+// ============================================================
+
+export type AccountType =
+  | 'client_lead'
+  | 'compute_provider'
+  | 'partner'
+  | 'internal_target'
+  | 'unknown';
+
+export type ProductLane =
+  | 'builder'
+  | 'compute'
+  | 'relay'
+  | 'multiple'
+  | 'unknown';
+
+export type PipelineStatus =
+  | 'new'
+  | 'researching'
+  | 'qualified'
+  | 'contacted'
+  | 'meeting_booked'
+  | 'active_conversation'
+  | 'not_fit'
+  | 'follow_up_later'
+  | 'converted'
+  | 'archived';
+
+export type ProviderType =
+  | 'gpu_provider'
+  | 'data_center'
+  | 'cloud_partner'
+  | 'edge_compute'
+  | 'hardware_partner'
+  | 'infrastructure_reseller'
+  | 'unknown';
+
+export type CommentType =
+  | 'general_note'
+  | 'call_note'
+  | 'research_note'
+  | 'willem_feedback'
+  | 'provider_note'
+  | 'client_note'
+  | 'next_action'
+  | 'risk'
+  | 'opportunity'
+  | 'hubspot_note';
+
+export interface ScoutComment {
+  id: string;
+  accountId: string;
+  author?: string;
+  createdAt: string;
+  updatedAt?: string;
+  type: CommentType;
+  body: string;
+  nextAction?: string;
+  nextActionDate?: string;
+  visibility?: 'internal';
+}
+
+export interface ProviderProfile {
+  providerType: ProviderType;
+  gpuCapacityNotes: string;
+  region: string;
+  infrastructureType: string;
+  onboardingStage: string;
+  computeFitScore: number;
+  providerPriority: 'high' | 'medium' | 'low' | 'unset';
+  willemNotes: string;
+  providerSource: string;
+  providerEvidenceUrls: string[];
+}
+
+export interface FitScore {
+  total: number;
+  confidence: ConfidenceLevel;
+  builderFit: number;
+  computeFit: number;
+  relayFit: number;
+  providerFit: number;
+  reasons: string[];
+  evidenceUrls: string[];
+}
+
+export interface PipelineDiscoveryCandidate {
+  id: string;
+  name: string;
+  website: string;
+  accountTypeSuggestion: AccountType;
+  productLaneSuggestion: ProductLane;
+  providerTypeSuggestion?: ProviderType;
+  confidence: ConfidenceLevel;
+  reason: string;
+  evidenceUrls: string[];
+  suggestedNextAction: string;
+  industry?: string;
+  region?: string;
+}
+
+export interface HubspotExportRow {
+  company_name: string;
+  website: string;
+  account_type: string;
+  product_lane: string;
+  pipeline_status: string;
+  owner: string;
+  priority: string;
+  fit_score: number;
+  lead_source: string;
+  utm_source: string;
+  utm_medium: string;
+  utm_campaign: string;
+  utm_content: string;
+  next_action: string;
+  notes: string;
+  evidence_urls: string;
 }

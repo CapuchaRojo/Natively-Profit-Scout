@@ -37,67 +37,10 @@ import type {
   RoleMapEntry, Stakeholder, StakeholderHypothesis, HiringSignal,
   MilestoneSignal, OutreachAngle, PeopleDiscoveryQuestion, PeopleSignals,
   PeopleSourceQueueItem, PeopleSourceQueueStatus,
-  DiscoveredEmployee, LinkedInPostSignal, SourceWeight,
+  DiscoveredEmployee, LinkedInPostSignal,
 } from '../types';
 
-type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'apply';
-type ReconUrlStatus = ReconDiscoveredUrl['status'];
-
-const pasteRecoverableStatuses = new Set<ReconUrlStatus>([
-  'blocked',
-  'failed',
-  'unscanned',
-  'analyzing',
-  'blocked_by_proxy',
-  'login_walled',
-  'app_shell_or_empty',
-  'manual_paste_needed',
-  'not_found_404',
-]);
-
-const pasteStatusCopy: Partial<Record<ReconUrlStatus, { title: string; body: string; placeholder: string; rows: number }>> = {
-  blocked: {
-    title: 'Fetch blocked - paste visible content',
-    body: "Automatic fetch could not access this page. Paste the visible page content below and we'll analyze it the same way.",
-    placeholder: 'Paste the visible text from this page here...',
-    rows: 5,
-  },
-  blocked_by_proxy: {
-    title: 'Proxy blocked - paste visible content',
-    body: "The proxy could not retrieve this page. If it opens in your browser, paste the visible content below.",
-    placeholder: 'Paste browser-visible page text here...',
-    rows: 5,
-  },
-  login_walled: {
-    title: 'Login-walled page - paste visible content',
-    body: "This page appears to require authentication. Paste any visible public content below and we'll analyze it the same way.",
-    placeholder: 'Paste visible login-walled page text here...',
-    rows: 5,
-  },
-  app_shell_or_empty: {
-    title: 'JS-rendered or empty page - paste visible content',
-    body: "The fetched page did not include readable content. Paste the visible page text below if it renders in your browser.",
-    placeholder: 'Paste rendered page text here...',
-    rows: 5,
-  },
-  manual_paste_needed: {
-    title: 'Manual paste needed',
-    body: "Automatic fetch needs help for this source. Paste the relevant page content below.",
-    placeholder: 'Paste relevant page text here...',
-    rows: 5,
-  },
-  not_found_404: {
-    title: 'Page not found - paste if you can access it',
-    body: "Automatic fetch saw a 404/not-found response. Paste content only if the page is available to you in a browser.",
-    placeholder: 'Paste page text here if the URL works in your browser...',
-    rows: 3,
-  },
-};
-
-const getPastePrompt = (status: ReconUrlStatus) => pasteStatusCopy[status] || {
-  placeholder: 'Or paste page text here if automatic fetch fails...',
-  rows: 3,
-};
+type Tab = 'discover' | 'fetch' | 'tools' | 'workflows' | 'suggestions' | 'openings' | 'people' | 'intel' | 'apply';
 
 export default function AutoFillReconPage() {
   const { id } = useParams();
@@ -183,6 +126,53 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
         else if (rf.discoveredUrls.length > 0) { setActiveTab('fetch'); }
       }
     }
+    // Restore aggressive recon from persisted state
+    if (!aggressiveReconResult && company?.aggressiveRecon) {
+      const p = company.aggressiveRecon;
+      setAggressiveReconResult({
+        extractedPeople: (p.extractedPeople || []).map(x => ({
+          name: x.name, role: x.role, department: x.department,
+          evidence: x.evidence, sourceUrl: x.sourceUrl, confidence: x.confidence,
+        })),
+        linkedInJobs: (p.linkedInJobs || []).map(j => ({
+          title: j.title, department: j.department,
+          techStackMentions: j.techStackMentions || [], growthSignal: j.growthSignal || '',
+          nativelyImplication: j.nativelyImplication,
+        })),
+        linkedInCompany: p.linkedInCompany ? {
+          industry: p.linkedInCompany.industry,
+          employeeRange: p.linkedInCompany.employeeRange,
+          headquarters: p.linkedInCompany.headquarters,
+          description: p.linkedInCompany.description,
+          growthIndicators: p.linkedInCompany.growthIndicators,
+        } as any : undefined,
+        searchIntel: (p.searchIntel || []).map(si => ({
+          query: si.query,
+          signals: (si.signals || []).map(s => ({
+            type: s.type, title: s.title, snippet: s.snippet,
+            nativelyAngle: s.nativelyAngle, url: s.url, confidence: s.confidence,
+          })),
+        })),
+        newsIntel: (p.newsIntel || []).map(ni => ({
+          query: ni.query,
+          signals: (ni.signals || []).map(s => ({
+            type: s.type, title: s.title, snippet: s.snippet,
+            nativelyAngle: s.nativelyAngle, urgencyLevel: s.urgencyLevel,
+            confidence: s.confidence,
+          })),
+        })),
+        socialFootprint: {} as any,
+        socialDiscoveryUrls: (p.socialDiscoveryUrls || []).map(u => ({
+          platform: u.platform, url: u.url, confidence: u.confidence,
+        })),
+        linkedInResearchUrls: (p.linkedInResearchUrls || []).map(u => ({
+          platform: u.platform, url: u.url, confidence: u.confidence,
+        })),
+        generatedStakeholders: [],
+        summary: p.summary || '',
+        errors: p.errors || [],
+      });
+    }
   }, [company?.id]);
 
   if (!company) {
@@ -254,18 +244,22 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   // ─── Aggressive Full Recon Handler (Phase 2) ──────────────
 
   const handleAggressiveRecon = async () => {
-    if (!homepageUrl) return;
     setAggressiveReconRunning(true);
     setAggressiveReconStatus('Initializing full aggressive recon...');
     setAggressiveReconResult(null);
 
+    const companyName = company.basic.name;
+    const website = homepageUrl || company.basic.website || '';
+
     try {
-      setAggressiveReconStatus('Scanning team pages for employees...');
-      const result = await runFullAggressiveRecon(company.basic.name, homepageUrl);
+      setAggressiveReconStatus(website ? 'Scanning team pages for employees...' : 'Running search intel (no URL — skipping team scan)...');
+      const result = await runFullAggressiveRecon(companyName, website, {
+        skipTeamPages: !website,
+      });
       
       setAggressiveReconResult(result);
       
-      // Merge extracted people into the People tab state
+      // Merge extracted people into the People tab state as proper cards
       if (result.extractedPeople.length > 0) {
         const newRoleMap: RoleMapEntry[] = result.extractedPeople.map(p => ({
           roleType: inferRoleType(p.role),
@@ -307,8 +301,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       }
 
       // Persist recon URL discovery results
-      if (homepageUrl) {
-        const urls = discoverPublicUrls(homepageUrl);
+      if (website) {
+        const urls = discoverPublicUrls(website);
         if (urls.length > 0 && discoveredUrls.length === 0) {
           setDiscoveredUrls(urls);
         }
@@ -318,8 +312,52 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       setAggressiveReconStatus(result.summary);
       showToast(`✅ ${result.summary}`, 'success');
       
-      // Navigate to People tab to show results
       setActiveTab('people');
+
+      // ── Persist aggressive recon to company record ──────────
+      const persisted: import('../types').PersistedAggressiveRecon = {
+        extractedPeople: result.extractedPeople.map(p => ({
+          name: p.name, role: p.role, department: p.department,
+          evidence: p.evidence, sourceUrl: p.sourceUrl, confidence: p.confidence,
+        })),
+        linkedInJobs: (result.linkedInJobs || []).map(j => ({
+          title: j.title, department: j.department,
+          techStackMentions: j.techStackMentions || [], growthSignal: j.growthSignal || '',
+          nativelyImplication: j.nativelyImplication,
+        })),
+        linkedInCompany: result.linkedInCompany ? {
+          industry: result.linkedInCompany.industry,
+          employeeRange: result.linkedInCompany.employeeRange,
+          headquarters: result.linkedInCompany.headquarters,
+          description: result.linkedInCompany.description,
+          growthIndicators: result.linkedInCompany.growthIndicators || [],
+        } : undefined,
+        searchIntel: (result.searchIntel || []).map(si => ({
+          query: si.query,
+          signals: (si.signals || []).map(s => ({
+            type: s.type, title: s.title, snippet: s.snippet,
+            nativelyAngle: s.nativelyAngle, url: s.url, confidence: s.confidence,
+          })),
+        })),
+        newsIntel: (result.newsIntel || []).map(ni => ({
+          query: ni.query,
+          signals: (ni.signals || []).map(s => ({
+            type: s.type || 'news', title: s.title, snippet: s.snippet,
+            nativelyAngle: s.nativelyAngle, url: (s as any).url,
+            urgencyLevel: s.urgencyLevel, confidence: s.confidence,
+          })),
+        })),
+        socialDiscoveryUrls: (result.socialDiscoveryUrls || []).map(u => ({
+          platform: u.platform, url: u.url, confidence: u.confidence,
+        })),
+        linkedInResearchUrls: (result.linkedInResearchUrls || []).map(u => ({
+          platform: u.platform, url: u.url, confidence: u.confidence as ConfidenceLevel,
+        })),
+        summary: result.summary,
+        errors: result.errors || [],
+        scannedAt: new Date().toISOString(),
+      };
+      updateCompany(company.id, { aggressiveRecon: persisted });
     } catch (err) {
       setAggressiveReconStatus(`Recon failed: ${String(err)}`);
       showToast(`❌ Aggressive recon failed: ${String(err)}`, 'error');
@@ -435,7 +473,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const urlsToScan = discoveredUrls.filter(u => u.status === 'unscanned').slice(0, settings.maxPagesPerScan);
 
     const localDetected: DetectedTool[] = [];
-    const allPageTexts: { text: string; url: string; html?: string; sourceWeight?: SourceWeight }[] = [];
+    const allPageTexts: { text: string; url: string; html?: string }[] = [];
     let updatedUrls = [...discoveredUrls];
 
     // Lazy-import content quality
@@ -445,6 +483,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       const urlInfo = urlsToScan[i];
       setFetchProgress(`Fetching ${i + 1}/${urlsToScan.length}: ${urlInfo.pageType}`);
       const result = await fetchWithCorsFallback(urlInfo.url);
+
       // Use content quality classifier
       const classification = classifyFetchResult(urlInfo.url, result.html, result.text, result.httpStatus, result.error, result.blocked);
       const sourceWeight = classifySourceWeight(urlInfo.pageType, classification.status, result.fetchMethod);
@@ -464,7 +503,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
 
       if (result.success && result.html && !shouldExcludeFromInference(classification.status, sourceWeight)) {
         const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
-        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html, sourceWeight });
+        allPageTexts.push({ text: cleanedText, url: urlInfo.url, html: result.html });
         if (settings.enableToolFingerprinting) {
           const { fingerprintPage, inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...fingerprintPage(result.html, urlInfo.url).detected);
@@ -479,7 +518,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     const pastedUrls = discoveredUrls.filter(u => u.status === 'pasted' && u.fetchedText);
     for (const urlInfo of pastedUrls) {
       if (urlInfo.fetchedText) {
-        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight || 'high_signal' });
+        allPageTexts.push({ text: urlInfo.fetchedText, url: urlInfo.url });
         if (settings.enableToolFingerprinting) {
           const { inferToolsFromText } = await import('../services/toolFingerprintEngine');
           localDetected.push(...inferToolsFromText(urlInfo.fetchedText, urlInfo.url));
@@ -505,7 +544,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       const { inferWorkflowsFromText } = await import('../services/workflowInferenceEngine');
       const wfMap = new Map<string, InferredWorkflow>();
       for (const page of allPageTexts) {
-        if (page.sourceWeight && shouldSuppressWorkflowInference(page.sourceWeight)) continue;
         for (const w of inferWorkflowsFromText(page.text, page.url, localTools)) {
           const existing = wfMap.get(w.workflowName);
           if (!existing || w.confidence === 'High') wfMap.set(w.workflowName, w);
@@ -904,6 +942,36 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       setStakeholderGenMessage(`✅ Created ${newStakeholders.length} stakeholder record${newStakeholders.length !== 1 ? 's' : ''} from People Intelligence`);
     }
   };
+  const handleCreateStakeholdersFromReconPeople = () => {
+    if (!aggressiveReconResult?.extractedPeople.length) {
+      setStakeholderGenMessage('No people extracted from recon. Run aggressive recon first.');
+      setGeneratedStakeholders([]);
+      return;
+    }
+    
+    const { stakeholders, duplicates } = mapExtractedPeopleToStakeholders(
+      aggressiveReconResult.extractedPeople,
+      company.stakeholders
+    );
+    
+    if (stakeholders.length > 0) {
+      updateCompany(company.id, {
+        stakeholders: [...company.stakeholders, ...stakeholders],
+      });
+      setGeneratedStakeholders(stakeholders);
+      const namedStakeholders = stakeholders.filter(s => s.name);
+      if (namedStakeholders.length > 0) {
+        const names = namedStakeholders.map(s => `${s.name} (${s.role})`).join(', ');
+        setStakeholderGenMessage(`Created ${stakeholders.length} stakeholder records: ${names}`);
+      } else {
+        setStakeholderGenMessage(`Created ${stakeholders.length} stakeholder records from recon people`);
+      }
+    } else if (duplicates > 0) {
+      setStakeholderGenMessage(`${duplicates} stakeholder${duplicates !== 1 ? 's' : ''} already exist — no duplicates added.`);
+    } else {
+      setStakeholderGenMessage('No new stakeholders could be created from extracted people.');
+    }
+  };
   // ─── CRM Brief & Copy Handler ────────────────────────────────
 
   const generateCrmBriefText = (): string => {
@@ -1272,6 +1340,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     { key: 'suggestions', label: 'Suggestions', icon: '💡' },
     { key: 'openings', label: 'Openings', icon: '🎯' },
     { key: 'people', label: 'People', icon: '👤' },
+    { key: 'intel', label: 'Intel', icon: '📊' },
     { key: 'apply', label: 'Apply', icon: '✅' },
   ];
 
@@ -1380,7 +1449,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                 <button
                   className="btn btn-accent"
                   onClick={handleAggressiveRecon}
-                  disabled={!homepageUrl || aggressiveReconRunning}
+                  disabled={aggressiveReconRunning}
                   style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)', color: '#fff', border: 'none' }}
                 >
                   {aggressiveReconRunning ? '⚡ Recon Running...' : '🚀 Full Aggressive Recon'}
@@ -1592,9 +1661,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                               {urlInfo.status}
                             </span>
                           </div>
-                          {pasteRecoverableStatuses.has(urlInfo.status) && (
+                          {(urlInfo.status === 'blocked' || urlInfo.status === 'failed' || urlInfo.status === 'unscanned' || urlInfo.status === 'analyzing') && (
                             <div style={{ marginTop: 4 }}>
-                              {pasteStatusCopy[urlInfo.status] && (
+                              {urlInfo.status === 'blocked' && (
                                 <div style={{
                                   padding: '8px 10px',
                                   background: 'rgba(245, 158, 11, 0.08)',
@@ -1604,10 +1673,10 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                                   fontSize: 11,
                                 }}>
                                   <div style={{ color: '#f59e0b', fontWeight: 600, marginBottom: 4 }}>
-                                    {pasteStatusCopy[urlInfo.status]?.title}
+                                    ⚠️ Direct fetch blocked — retrying via proxy
                                   </div>
                                   <div style={{ color: '#e2e8f0', fontSize: 11 }}>
-                                    {pasteStatusCopy[urlInfo.status]?.body}
+                                    The proxy will attempt an aggressive server-side fetch. If it also fails, paste the page content below as a last resort.
                                   </div>
                                 </div>
                               )}
@@ -1628,8 +1697,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                               {urlInfo.status !== 'analyzing' && (
                                 <textarea
                                   className="input"
-                                  placeholder={getPastePrompt(urlInfo.status).placeholder}
-                                  rows={getPastePrompt(urlInfo.status).rows}
+                                  placeholder="Or paste page text here if proxy also fails..."
+                                  rows={urlInfo.status === 'blocked' ? 5 : 3}
                                   style={{ fontSize: 11 }}
                                   onBlur={e => {
                                     const val = e.target.value.trim();
@@ -1897,138 +1966,61 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               companyName={company.basic.name}
               onAutoFill={handleLinkedInAutoFill}
             />
+
             {aggressiveReconResult && !aggressiveReconRunning && (
               <div style={{
-                padding: 12, background: 'rgba(16,185,129,0.06)', borderRadius: 6,
+                padding: 16, background: 'rgba(16,185,129,0.06)', borderRadius: 8,
                 border: '1px solid rgba(16,185,129,0.25)', marginBottom: 16,
               }}>
-                <div style={{ fontSize: 13, color: '#10b981', fontWeight: 600, marginBottom: 8 }}>
-                  ⚡ Aggressive Recon Complete
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ fontSize: 14, color: '#10b981', fontWeight: 600 }}>
+                    Full Aggressive Recon Complete
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setActiveTab('intel')}
+                    style={{ fontSize: 11, color: '#3b82f6', cursor: 'pointer' }}
+                  >
+                    View Full Intel Feed &rarr;
+                  </button>
                 </div>
-                <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
-                  {aggressiveReconResult.extractedPeople.length > 0 && (
-                    <div>👤 {aggressiveReconResult.extractedPeople.length} people extracted from team pages</div>
-                  )}
-                  {aggressiveReconResult.linkedInJobs.length > 0 && (
-                    <div>💼 {aggressiveReconResult.linkedInJobs.length} LinkedIn job postings found</div>
-                  )}
-                  {aggressiveReconResult.linkedInCompany?.description && (
-                    <div>🏢 LinkedIn company profile captured</div>
-                  )}
-                  {aggressiveReconResult.searchIntel.length > 0 && (
-                    <div>🔍 {aggressiveReconResult.searchIntel.reduce((sum, s) => sum + s.signals.length, 0)} intel signals from web search</div>
-                  )}
-                  {aggressiveReconResult.generatedStakeholders.length > 0 && (
-                    <div>✅ {aggressiveReconResult.generatedStakeholders.length} stakeholder records generated</div>
-                  )}
-                  {aggressiveReconResult.errors.length > 0 && (
-                    <div style={{ color: '#f59e0b', marginTop: 4 }}>
-                      ⚠️ {aggressiveReconResult.errors.length} errors (non-blocking)
-                    </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: 8, marginBottom: 12 }}>
+                  <ReconSummaryStat label="People" value={aggressiveReconResult.extractedPeople.length} color="#10b981" />
+                  <ReconSummaryStat label="Jobs" value={aggressiveReconResult.linkedInJobs.length} color="#3b82f6" />
+                  {aggressiveReconResult.searchIntel.reduce((s, si) => s + si.signals.length, 0) > 0 && (
+                    <ReconSummaryStat label="Signals" value={aggressiveReconResult.searchIntel.reduce((s, si) => s + si.signals.length, 0)} color="#06b6d4" />
                   )}
                 </div>
-                {/* LinkedIn Jobs Preview */}
-                {aggressiveReconResult.linkedInJobs.length > 0 && (
-                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
-                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
-                      💼 LinkedIn Job Postings
-                    </div>
-                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
-                      {aggressiveReconResult.linkedInJobs.slice(0, 10).map((job, i) => (
-                        <div key={i} style={{
-                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
-                        }}>
-                          <span style={{ color: '#e2e8f0', flex: 1 }} className="truncate">{job.title}</span>
-                          <span className="badge badge-amber" style={{ fontSize: 8 }}>{job.department}</span>
-                          {job.techStackMentions.length > 0 && (
-                            <span style={{ color: '#3b82f6', fontSize: 8 }}>
-                              {job.techStackMentions.slice(0, 3).join(', ')}
-                            </span>
-                          )}
-                        </div>
+                {aggressiveReconResult.extractedPeople.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 4 }}>Key People Extracted</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+                      {aggressiveReconResult.extractedPeople.slice(0, 6).map((p, i) => (
+                        <span key={i} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.2)' }}>
+                          {p.name} {p.role && `- ${p.role}`}
+                        </span>
                       ))}
+                      {aggressiveReconResult.extractedPeople.length > 6 && (
+                        <span style={{ fontSize: 10, color: '#64748b' }}>+{aggressiveReconResult.extractedPeople.length - 6} more</span>
+                      )}
                     </div>
-                  </div>
+                  </>
                 )}
-                {/* Social Discovery Preview */}
-                {aggressiveReconResult.socialDiscoveryUrls && aggressiveReconResult.socialDiscoveryUrls.length > 0 && (
-                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
-                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
-                      🌐 Social Profiles Discovered
-                    </div>
-                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
-                      {aggressiveReconResult.socialDiscoveryUrls
-                        .filter(u => u.confidence !== 'Low')
-                        .slice(0, 12)
-                        .map((url, i) => (
-                        <div key={i} style={{
-                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
-                        }}>
-                          <span style={{
-                            fontSize: 8, padding: '1px 4px', borderRadius: 2, flexShrink: 0,
-                            background: url.confidence === 'High' ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.1)',
-                            color: url.confidence === 'High' ? '#10b981' : '#f59e0b',
-                          }}>
-                            {url.platform}
-                          </span>
-                          <a href={url.url} target="_blank" rel="noopener noreferrer"
-                            className="truncate" style={{ color: '#3b82f6', flex: 1, textDecoration: 'none' }}>
-                            {url.url}
-                          </a>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* News Intel Preview */}
-                {aggressiveReconResult.newsIntel && aggressiveReconResult.newsIntel.length > 0 && (
-                  <div style={{ marginTop: 8, borderTop: '1px solid rgba(42,58,92,0.4)', paddingTop: 8 }}>
-                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>
-                      📰 News Intelligence
-                    </div>
-                    <div style={{ display: 'grid', gap: 3, maxHeight: 200, overflow: 'auto' }}>
-                      {aggressiveReconResult.newsIntel
-                        .flatMap(n => n.signals)
-                        .filter(s => s.urgencyLevel === 'high' || s.confidence === 'High')
-                        .slice(0, 10)
-                        .map((signal, i) => (
-                        <div key={i} style={{
-                          display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                          padding: '3px 6px', background: '#0f1525', borderRadius: 3,
-                        }}>
-                          <span style={{
-                            fontSize: 8, padding: '1px 4px', borderRadius: 2, flexShrink: 0,
-                            background: signal.growthIndicator && signal.painIndicator ? 'rgba(168,85,247,0.12)'
-                              : signal.growthIndicator ? 'rgba(16,185,129,0.12)'
-                              : signal.painIndicator ? 'rgba(239,68,68,0.1)'
-                              : 'rgba(100,116,139,0.1)',
-                            color: signal.growthIndicator && signal.painIndicator ? '#a855f7'
-                              : signal.growthIndicator ? '#10b981'
-                              : signal.painIndicator ? '#ef4444'
-                              : '#64748b',
-                          }}>
-                            {signal.growthIndicator ? '📈' : signal.painIndicator ? '⚠️' : ''} {signal.type.replace(/_/g, ' ')}
-                          </span>
-                          <span className="truncate" style={{ color: '#e2e8f0', flex: 1 }}>{signal.title}</span>
-                          <span style={{
-                            fontSize: 7, padding: '1px 3px', borderRadius: 2, flexShrink: 0,
-                            background: signal.urgencyLevel === 'high' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.08)',
-                            color: signal.urgencyLevel === 'high' ? '#ef4444' : '#f59e0b',
-                          }}>
-                            {signal.urgencyLevel}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary btn-sm" onClick={handleCreateStakeholdersFromReconPeople} style={{ fontSize: 11, cursor: 'pointer' }}>
+                    Create Stakeholder Records from Recon People
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setActiveTab('intel')} style={{ fontSize: 11, color: '#3b82f6', cursor: 'pointer' }}>
+                    Open Intel Feed
+                  </button>
+                </div>
+                {aggressiveReconResult.errors.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 10, color: '#f59e0b' }}>{aggressiveReconResult.errors.length} non-blocking errors</div>
                 )}
               </div>
             )}
 
             {/* ChatGPT JSON Import */}
-
             {/* People Source Discovery Section */}
             <ChatGptJsonPaste onParsed={handleChatGptJsonParsed} />
             <div style={{
@@ -2177,7 +2169,7 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
               </div>
             )}
 
-            <div className="flex" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <div className="flex" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div style={{ flex: '0 0 200px' }}>
                 <label className="input-label" style={{ fontSize: 11 }}>Source Type</label>
                 <select
@@ -2204,10 +2196,30 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                   onChange={e => setPeopleSourceUrl(e.target.value)}
                   placeholder="https://www.linkedin.com/company/..."
                   style={{ fontSize: 12 }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && peopleSourceUrl) {
+                      e.preventDefault();
+                      window.open(peopleSourceUrl, '_blank');
+                    }
+                  }}
                 />
               </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  if (peopleSourceUrl) window.open(peopleSourceUrl, '_blank');
+                }}
+                disabled={!peopleSourceUrl}
+                title="Open source URL in new tab, then paste content below"
+                style={{ whiteSpace: 'nowrap', height: 36 }}
+              >
+                🔗 Open URL
+              </button>
             </div>
 
+            <div style={{ fontSize: 10, color: '#64748b', marginBottom: 12, marginTop: -8 }}>
+              🔗 Open the URL → copy the page content → paste below → click Analyze
+            </div>
             {/* Public Text Textarea */}
             <div className="input-group">
               <label className="input-label">Paste Public People / Company Text</label>
@@ -2587,6 +2599,236 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
           </div>
         </div>
       )}
+
+      {/* ─── TAB: INTEL FEED ────────────────────────────────── */}
+      {activeTab === 'intel' && (
+        <div className="card">
+          <div className="card-header">
+            <span className="input-label" style={{ margin: 0 }}>Intel Feed</span>
+            {aggressiveReconResult && <span className="badge badge-purple" style={{ fontSize: 10 }}>Aggressive Recon</span>}
+          </div>
+          <div className="card-body">
+            {!aggressiveReconResult ? (
+              <EmptyState>
+                <EmptyStateIcon icon="📊" />
+                <EmptyStateTitle>No Intel Collected</EmptyStateTitle>
+                <EmptyStateDesc>Run Full Aggressive Recon from the Discover tab to populate this feed with real-time intelligence signals.</EmptyStateDesc>
+                <button className="btn btn-primary btn-sm" onClick={() => setActiveTab('discover')}>Go to Discover</button>
+              </EmptyState>
+            ) : (
+              <div style={{ display: 'grid', gap: 24 }}>
+
+                {/* Extracted People */}
+                {aggressiveReconResult.extractedPeople.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      Extracted People ({aggressiveReconResult.extractedPeople.length})
+                    </div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {aggressiveReconResult.extractedPeople.map((p, i) => (
+                        <div key={i} style={{ padding: 12, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 12 }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{p.name}</span>
+                            <div className="flex" style={{ gap: 4 }}>
+                              <span className="badge badge-amber" style={{ fontSize: 9 }}>{p.department}</span>
+                              <span className={`badge ${p.confidence === 'High' ? 'badge-green' : p.confidence === 'Medium' ? 'badge-amber' : 'badge-red'}`} style={{ fontSize: 9 }}>{p.confidence}</span>
+                            </div>
+                          </div>
+                          {p.role && <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 2 }}>Role: {p.role}</div>}
+                          <div style={{ color: '#64748b', fontSize: 10 }}>Source: {p.sourceUrl} | {p.evidence}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* LinkedIn Jobs */}
+                {aggressiveReconResult.linkedInJobs.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      LinkedIn Job Postings ({aggressiveReconResult.linkedInJobs.length})
+                    </div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {aggressiveReconResult.linkedInJobs.map((job, i) => (
+                        <div key={i} style={{ padding: 12, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 12 }}>
+                          <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                            <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{job.title}</span>
+                            <span className="badge badge-blue" style={{ fontSize: 10 }}>{job.department}</span>
+                          </div>
+                          {job.techStackMentions.length > 0 && (
+                            <div style={{ fontSize: 11, color: '#3b82f6', marginBottom: 4 }}>
+                              Tech: {job.techStackMentions.join(', ')}
+                            </div>
+                          )}
+                          <div style={{ color: '#10b981', fontSize: 11 }}>{job.growthSignal}</div>
+                          {job.nativelyImplication && (
+                            <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>{job.nativelyImplication}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* LinkedIn Company */}
+                {aggressiveReconResult.linkedInCompany && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      LinkedIn Company Profile
+                    </div>
+                    <div style={{ padding: 12, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 12 }}>
+                      {aggressiveReconResult.linkedInCompany.industry && (
+                        <div style={{ marginBottom: 4 }}><span style={{ color: '#64748b' }}>Industry:</span> <span style={{ color: '#e2e8f0' }}>{aggressiveReconResult.linkedInCompany.industry}</span></div>
+                      )}
+                      {aggressiveReconResult.linkedInCompany.employeeRange && (
+                        <div style={{ marginBottom: 4 }}><span style={{ color: '#64748b' }}>Size:</span> <span style={{ color: '#e2e8f0' }}>{aggressiveReconResult.linkedInCompany.employeeRange}</span></div>
+                      )}
+                      {aggressiveReconResult.linkedInCompany.headquarters && (
+                        <div style={{ marginBottom: 4 }}><span style={{ color: '#64748b' }}>HQ:</span> <span style={{ color: '#e2e8f0' }}>{aggressiveReconResult.linkedInCompany.headquarters}</span></div>
+                      )}
+                      {aggressiveReconResult.linkedInCompany.description && (
+                        <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 4 }}>{aggressiveReconResult.linkedInCompany.description.slice(0, 300)}</div>
+                      )}
+                      {aggressiveReconResult.linkedInCompany.growthIndicators.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                          {aggressiveReconResult.linkedInCompany.growthIndicators.map((g, i) => (
+                            <span key={i} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.2)' }}>{g}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Search Intel */}
+                {aggressiveReconResult.searchIntel.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      Search Intelligence ({aggressiveReconResult.searchIntel.reduce((s, si) => s + si.signals.length, 0)} signals)
+                    </div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {aggressiveReconResult.searchIntel.map((si, gi) => (
+                        <div key={gi}>
+                          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Query: {si.query}</div>
+                          {si.signals.map((signal, siIdx) => (
+                            <div key={siIdx} style={{ padding: 10, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 11, marginBottom: 4 }}>
+                              <div className="flex items-center justify-between" style={{ marginBottom: 3 }}>
+                                <div className="flex items-center" style={{ gap: 6 }}>
+                                  <span style={{ padding: '1px 6px', borderRadius: 3, fontSize: 9, background: signal.type === 'funding' ? 'rgba(16,185,129,0.12)' : signal.type === 'partnership' ? 'rgba(59,130,246,0.12)' : signal.type === 'expansion' ? 'rgba(168,85,247,0.12)' : signal.type === 'layoffs' ? 'rgba(239,68,68,0.1)' : 'rgba(100,116,139,0.1)', color: signal.type === 'funding' ? '#10b981' : signal.type === 'partnership' ? '#3b82f6' : signal.type === 'expansion' ? '#a855f7' : signal.type === 'layoffs' ? '#ef4444' : '#64748b' }}>{signal.type.replace(/_/g, ' ')}</span>
+                                  <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{signal.title}</span>
+                                </div>
+                                {signal.url && (
+                                  <a href={signal.url} target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6', fontSize: 10, textDecoration: 'none', cursor: 'pointer' }}>Open</a>
+                                )}
+                              </div>
+                              {signal.snippet && <div style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>{signal.snippet.slice(0, 200)}</div>}
+                              {signal.nativelyAngle && <div style={{ color: '#10b981', fontSize: 10 }}>{signal.nativelyAngle}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* News Intel */}
+                {aggressiveReconResult.newsIntel && aggressiveReconResult.newsIntel.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      News Intelligence ({aggressiveReconResult.newsIntel.reduce((s, n) => s + n.signals.length, 0)} items)
+                    </div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {aggressiveReconResult.newsIntel.map((ni, gi) => (
+                        <div key={gi}>
+                          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>Query: {ni.query}</div>
+                          {ni.signals.map((signal, siIdx) => (
+                            <div key={siIdx} style={{ padding: 10, background: '#0f1525', borderRadius: 6, border: '1px solid #2a3a5c', fontSize: 11, marginBottom: 4 }}>
+                              <div className="flex items-center justify-between" style={{ marginBottom: 3 }}>
+                                <span style={{ color: '#e2e8f0', fontWeight: 500 }}>{signal.title}</span>
+                                <div className="flex" style={{ gap: 4 }}>
+                                  <span style={{ padding: '1px 4px', borderRadius: 2, fontSize: 8, background: signal.urgencyLevel === 'high' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.08)', color: signal.urgencyLevel === 'high' ? '#ef4444' : '#f59e0b' }}>{signal.urgencyLevel}</span>
+                                  <span className={`badge ${signal.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 8 }}>{signal.confidence}</span>
+                                </div>
+                              </div>
+                              {signal.snippet && <div style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>{signal.snippet.slice(0, 200)}</div>}
+                              {signal.nativelyAngle && <div style={{ color: '#10b981', fontSize: 10 }}>{signal.nativelyAngle}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Social Discovery */}
+                {aggressiveReconResult.socialDiscoveryUrls && aggressiveReconResult.socialDiscoveryUrls.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      Social Discovery ({aggressiveReconResult.socialDiscoveryUrls.length} profiles)
+                    </div>
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      {aggressiveReconResult.socialDiscoveryUrls.filter(u => u.confidence !== 'Low').map((url, i) => (
+                        <a key={i} href={url.url} target="_blank" rel="noopener noreferrer" style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                          background: '#0f1525', borderRadius: 4, border: '1px solid #2a3a5c',
+                          textDecoration: 'none', cursor: 'pointer', fontSize: 12,
+                        }}>
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 3, fontSize: 10, flexShrink: 0,
+                            background: url.confidence === 'High' ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.1)',
+                            color: url.confidence === 'High' ? '#10b981' : '#f59e0b',
+                          }}>{url.platform}</span>
+                          <span className="truncate" style={{ color: '#3b82f6', flex: 1 }}>{url.url}</span>
+                          <span className={`badge ${url.confidence === 'High' ? 'badge-green' : 'badge-amber'}`} style={{ fontSize: 9 }}>{url.confidence}</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* LinkedIn Research Links */}
+                {aggressiveReconResult.linkedInResearchUrls && aggressiveReconResult.linkedInResearchUrls.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 600, marginBottom: 10 }}>
+                      🔗 LinkedIn Research Links ({aggressiveReconResult.linkedInResearchUrls.length}) — Open in browser
+                    </div>
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      {aggressiveReconResult.linkedInResearchUrls.map((link, i) => (
+                        <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                          background: '#0f1525', borderRadius: 4, border: '1px solid #2a3a5c',
+                          textDecoration: 'none', cursor: 'pointer', fontSize: 12,
+                        }}>
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 3, fontSize: 10, flexShrink: 0,
+                            background: 'rgba(10,102,194,0.12)', color: '#0a66c2',
+                          }}>LinkedIn</span>
+                          <span style={{ color: '#94a3b8', flex: 1, fontSize: 11 }}>
+                            {link.label || link.url.slice(0, 80)}
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Summary */}
+                <div style={{ padding: 12, background: 'rgba(16,185,129,0.06)', borderRadius: 6, border: '1px solid rgba(16,185,129,0.2)', fontSize: 12, color: '#10b981' }}>
+                  {aggressiveReconResult.summary}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+function ReconSummaryStat({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{ textAlign: 'center', padding: '6px 8px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: `1px solid ${color}20` }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color, lineHeight: 1.2 }}>{value}</div>
+      <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>{label}</div>
     </div>
   );
 }

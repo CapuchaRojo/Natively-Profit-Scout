@@ -513,11 +513,15 @@ select.input {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
+.stat-card-icon {
+  opacity: 0.5;
+  display: flex;
+  align-items: center;
+}
 .stat-card-trend {
   font-size: 12px;
   margin-top: 4px;
 }
-
 /* ========================================
    Chip Styles
    ======================================== */

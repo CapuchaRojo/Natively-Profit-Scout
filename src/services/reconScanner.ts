@@ -229,24 +229,7 @@ export async function fetchPublicUrl(url: string): Promise<{
   } catch (err: unknown) {
     const error = err as Error;
     if (error.name === 'AbortError') return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
-    const isCors = error.message?.includes('Failed to fetch') ||
-                   error.message?.includes('NetworkError') ||
-                   error.name === 'TypeError' ||
-                   error.message?.includes('CORS');
-
-    if (isCors) {
-      return {
-        success: false,
-        error: 'Local fetch failed — retrying via proxy',
-        blocked: true,
-      };
-    }
-
-    if (error.name === 'AbortError') {
-      return { success: false, error: 'Request timed out after 10 seconds.', blocked: false };
-    }
-
-    return { success: false, error: error.message || 'Unknown error', blocked: false };
+    return { success: false, error: 'Local fetch failed — retrying via proxy', blocked: true };
   }
 }
 
@@ -321,7 +304,6 @@ export async function scanCompanyPublicSurface(
       urlInfo.fetchedText = (result.text || '').slice(0, settings.maxCharsPerPage);
       urlInfo.fetchSourceType = result.fetchMethod || 'browser-fetch';
       const cleanedText = cleanContentForInference(result.text || '', urlInfo.pageType, urlInfo.url);
-
       fetchedPages.push({ url: urlInfo.url, html: result.html, text: result.text || '' });
       allTexts.push({ text: cleanedText, url: urlInfo.url, sourceWeight: urlInfo.sourceWeight });
 
@@ -688,6 +670,7 @@ import type { SocialFootprint, SocialDiscoveryUrl } from './socialDiscoveryEngin
 export interface AggressiveReconResult {
   extractedPeople: ExtractedPerson[];
   searchIntel: { query: string; signals: IntelSignal[] }[];
+  linkedInResearchUrls: { platform: string; url: string; confidence: string; label?: string }[];
   linkedInJobs: LinkedInJobSignal[];
   linkedInCompany?: LinkedInCompanySignal;
   newsIntel: NewsIntelItem[];
@@ -706,6 +689,7 @@ export async function runFullAggressiveRecon(
     skipSearch?: boolean;
     skipNews?: boolean;
     skipSocial?: boolean;
+    skipTeamPages?: boolean;
     maxSearchQueries?: number;
   }
 ): Promise<AggressiveReconResult> {
@@ -714,6 +698,7 @@ export async function runFullAggressiveRecon(
   const searchIntel: { query: string; signals: IntelSignal[] }[] = [];
   let linkedInJobs: LinkedInJobSignal[] = [];
   let linkedInCompany: LinkedInCompanySignal | undefined;
+  let linkedInResearchUrls: { platform: string; url: string; confidence: string; label?: string }[] = [];
   let newsIntel: NewsIntelItem[] = [];
   let socialFootprint: SocialFootprint = {};
   let socialDiscoveryUrls: SocialDiscoveryUrl[] = [];
@@ -723,14 +708,12 @@ export async function runFullAggressiveRecon(
   const [
     { extractPeopleFromHtml },
     { AGGRESSIVE_SEARCH_QUERIES, processSearchResults },
-    { extractJobsFromLinkedInText, extractCompanyFromLinkedInText },
     { mapExtractedPeopleToStakeholders },
     { processNewsSearchResults, NEWS_SEARCH_QUERIES },
     { discoverSocialFootprint, generateCandidateUrls, mergeWithCandidates },
   ] = await Promise.all([
     import('./teamExtractor'),
     import('./aggressiveSearchEngine'),
-    import('./linkedInPublicEngine'),
     import('./stakeholderEnricher'),
     import('./newsIntelEngine'),
     import('./socialDiscoveryEngine'),
@@ -743,48 +726,51 @@ export async function runFullAggressiveRecon(
     fetchLinkedInCompanyViaBackend,
   } = await import('./reconApiClient');
 
-  // ── Step 1: Scan team pages ──────────────────────────────
-  const baseOrigin = (() => { try { return new URL(website.startsWith('http') ? website : `https://${website}`).origin; } catch { return website; } })();
-  const teamPaths = ['/team', '/our-team', '/leadership', '/management', '/about', '/about-us', '/people', '/staff', '/executives', '/founders'];
-  const teamUrls = teamPaths.map(p => `${baseOrigin}${p}`);
+  // ── Step 1: Scan team pages (iff we have a website URL) ──
+  const hasUrl = website && website.length > 0;
+  if (hasUrl && !options?.skipTeamPages) {
+    try {
+      const baseOrigin = (() => { try { return new URL(website.startsWith('http') ? website : `https://${website}`).origin; } catch { return website; } })();
+      const teamPaths = ['/team', '/our-team', '/leadership', '/management', '/about', '/about-us', '/people', '/staff', '/executives', '/founders'];
+      const teamUrls = teamPaths.map(p => `${baseOrigin}${p}`);
 
-  try {
-    const teamResult = await scanTeamPagesViaBackend(teamUrls);
-    if (teamResult.success && teamResult.pages) {
-      for (const page of teamResult.pages) {
-        if (page.success && page.html) {
-          const people = extractPeopleFromHtml(page.html, page.url);
-          extractedPeople.push(...people);
+      const teamResult = await scanTeamPagesViaBackend(teamUrls);
+      if (teamResult.success && teamResult.pages && teamResult.pages.length > 0) {
+        for (const page of teamResult.pages) {
+          if (page.success && page.html) {
+            const people = extractPeopleFromHtml(page.html, page.url);
+            if (people && people.length > 0) extractedPeople.push(...people);
+          }
+        }
+      } else {
+        // Try individual pages as fallback
+        for (const url of teamUrls.slice(0, 5)) {
+          try {
+            const result = await fetchWithCorsFallback(url);
+            if (result.success && result.html) {
+              const people = extractPeopleFromHtml(result.html, url);
+              if (people && people.length > 0) extractedPeople.push(...people);
+            }
+          } catch { /* continue */ }
         }
       }
-    } else {
-      // Try individual pages as fallback
-      for (const url of teamUrls.slice(0, 5)) {
-        try {
-          const result = await fetchWithCorsFallback(url);
-          if (result.success && result.html) {
-            const people = extractPeopleFromHtml(result.html, url);
-            extractedPeople.push(...people);
-          }
-        } catch { /* continue */ }
-      }
+    } catch (err) {
+      errors.push(`Team page scan failed: ${String(err)}`);
     }
-  } catch (err) {
-    errors.push(`Team page scan failed: ${String(err)}`);
   }
 
   // ── Step 2: Web search (aggressive signals) ─────────────
   if (!options?.skipSearch) {
     const maxQueries = options?.maxSearchQueries || 6;
-    const queries = AGGRESSIVE_SEARCH_QUERIES.slice(0, maxQueries);
+    const queries = AGGRESSIVE_SEARCH_QUERIES?.slice(0, maxQueries) || [];
 
     for (const { query } of queries) {
       try {
         const q = query.replace('{company}', companyName);
         const searchResult = await searchWebViaBackend(q, 5);
-        if (searchResult.success && searchResult.results.length > 0) {
+        if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
           const intel = processSearchResults(q, searchResult.results, companyName);
-          searchIntel.push({ query: q, signals: intel.signals });
+          searchIntel.push({ query: q, signals: intel.signals || [] });
         }
       } catch (err) {
         errors.push(`Search "${query}" failed: ${String(err)}`);
@@ -792,24 +778,42 @@ export async function runFullAggressiveRecon(
     }
   }
 
-  // ── Step 3: LinkedIn ─────────────────────────────────────
+  // ── Step 3: LinkedIn (SAFE — research links only) ───────
   if (!options?.skipLinkedIn) {
     try {
       const jobsResult = await fetchLinkedInJobsViaBackend(companyName);
-      if (jobsResult.success && jobsResult.data) {
-        linkedInJobs = extractJobsFromLinkedInText(jobsResult.data, companyName);
+      if (jobsResult.success && Array.isArray(jobsResult.linkedInUrls)) {
+        for (const link of jobsResult.linkedInUrls) {
+          linkedInResearchUrls.push({
+            platform: 'linkedin',
+            url: link.url,
+            confidence: 'High',
+            label: link.label,
+          });
+        }
+      } else if (!jobsResult.success) {
+        errors.push(`LinkedIn jobs links: ${jobsResult.message}`);
       }
     } catch (err) {
-      errors.push(`LinkedIn jobs fetch failed: ${String(err)}`);
+      errors.push(`LinkedIn jobs link generation failed: ${String(err)}`);
     }
 
     try {
       const companyResult = await fetchLinkedInCompanyViaBackend(companyName);
-      if (companyResult.success && companyResult.data) {
-        linkedInCompany = extractCompanyFromLinkedInText(companyResult.data);
+      if (companyResult.success && Array.isArray(companyResult.linkedInUrls)) {
+        for (const link of companyResult.linkedInUrls) {
+          linkedInResearchUrls.push({
+            platform: 'linkedin',
+            url: link.url,
+            confidence: 'High',
+            label: link.label,
+          });
+        }
+      } else if (!companyResult.success) {
+        errors.push(`LinkedIn company links: ${companyResult.message}`);
       }
     } catch (err) {
-      errors.push(`LinkedIn company fetch failed: ${String(err)}`);
+      errors.push(`LinkedIn company link generation failed: ${String(err)}`);
     }
   }
 
@@ -821,11 +825,12 @@ export async function runFullAggressiveRecon(
         companyName,
         { maxResultsPerQuery: 5 }
       );
-      newsIntel = newsResults;
+      newsIntel = newsResults || [];
     } catch (err) {
       errors.push(`News intel failed: ${String(err)}`);
     }
   }
+
   // ── Step 5: Social profile discovery ────────────────────
   if (!options?.skipSocial) {
     try {
@@ -835,44 +840,49 @@ export async function runFullAggressiveRecon(
         searchWebViaBackend,
         { maxResultsPerQuery: 5 }
       );
-      socialFootprint = socialResult.footprint;
-      socialDiscoveryUrls = socialResult.discoveredUrls;
+      socialFootprint = socialResult?.footprint || {};
+      socialDiscoveryUrls = socialResult?.discoveredUrls || [];
       
       // Merge with generated candidates for broader coverage
       const candidates = generateCandidateUrls(companyName, website);
       socialDiscoveryUrls = mergeWithCandidates(socialDiscoveryUrls, candidates);
       
-      for (const err of socialResult.errors) {
-        errors.push(`Social discovery: ${err}`);
+      for (const errItem of (socialResult?.errors || [])) {
+        errors.push(`Social discovery: ${errItem}`);
       }
     } catch (err) {
       errors.push(`Social discovery failed: ${String(err)}`);
       // Generate at least candidate URLs
-      socialDiscoveryUrls = generateCandidateUrls(companyName, website);
+      try { socialDiscoveryUrls = generateCandidateUrls(companyName, website); } catch { /* ignore */ }
     }
   }
 
   // ── Step 6: Generate stakeholders ───────────────────────
   if (extractedPeople.length > 0) {
-    const result = mapExtractedPeopleToStakeholders(extractedPeople, []);
-    generatedStakeholders = result.stakeholders;
+    try {
+      const result = mapExtractedPeopleToStakeholders(extractedPeople, []);
+      generatedStakeholders = result?.stakeholders || [];
+    } catch (err) {
+      errors.push(`Stakeholder generation failed: ${String(err)}`);
+    }
   }
 
   // ── Build summary ────────────────────────────────────────
-  const allSignals = searchIntel.flatMap(s => s.signals);
+  const allSignals = searchIntel.flatMap(s => s.signals || []);
   const uniqueSignalTypes = new Set(allSignals.map(s => s.type));
 
   const summaryParts: string[] = [];
   if (extractedPeople.length > 0) summaryParts.push(`${extractedPeople.length} people extracted from team pages`);
   if (allSignals.length > 0) summaryParts.push(`${allSignals.length} intel signals (${uniqueSignalTypes.size} types)`);
-  if (linkedInJobs.length > 0) summaryParts.push(`${linkedInJobs.length} LinkedIn job postings`);
+  if (linkedInResearchUrls.length > 0) summaryParts.push(`${linkedInResearchUrls.length} LinkedIn research links`);
   if (linkedInCompany?.description) summaryParts.push('LinkedIn company profile captured');
   if (newsIntel.length > 0) {
-    const newsSignals = newsIntel.flatMap(n => n.signals);
+    const newsSignals = newsIntel.flatMap(n => n.signals || []);
     summaryParts.push(`${newsSignals.length} news-driven signals (${newsIntel.length} articles)`);
   }
   if (Object.keys(socialFootprint).length > 0) summaryParts.push(`${Object.keys(socialFootprint).length} social profiles discovered`);
   if (generatedStakeholders.length > 0) summaryParts.push(`${generatedStakeholders.length} stakeholder records generated`);
+  if (errors.length > 0) summaryParts.push(`${errors.length} non-blocking errors`);
 
   const summary = summaryParts.length > 0
     ? `Aggressive recon complete: ${summaryParts.join('; ')}.`
@@ -881,6 +891,7 @@ export async function runFullAggressiveRecon(
   return {
     extractedPeople,
     searchIntel,
+    linkedInResearchUrls,
     linkedInJobs,
     linkedInCompany,
     newsIntel,

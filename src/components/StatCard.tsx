@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 interface Props {
   label: string;
   value: string | number;
-  icon?: string;
+  icon?: ReactNode;
   trend?: ReactNode;
   color?: 'blue' | 'green' | 'amber' | 'red' | 'purple';
   onClick?: () => void;
@@ -26,7 +26,7 @@ export function StatCard({ label, value, icon, trend, color = 'blue', onClick }:
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <span className="stat-card-label">{label}</span>
-        {icon && <span style={{ fontSize: 20, opacity: 0.4 }}>{icon}</span>}
+        {icon && <span className="stat-card-icon">{icon}</span>}
       </div>
       <div
         className="stat-card-value"

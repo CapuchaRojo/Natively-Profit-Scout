@@ -7,9 +7,8 @@ interface Props {
 export function EmptyState({ children }: Props) {
   return <div className="empty-state">{children}</div>;
 }
-
 interface EmptyStateIconProps {
-  icon: string;
+  icon: ReactNode;
 }
 
 export function EmptyStateIcon({ icon }: EmptyStateIconProps) {

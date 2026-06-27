@@ -1,14 +1,13 @@
 // ============================================================
-// Public Source Discovery Engine — v0.5
+// Public Source Discovery Engine — v0.6
 // Generates suggested public people/company source URLs from
-// company name and website. No scraping, no logins, no auth bypass.
-// ============================================================
+// company name and website. Aggressively discovers LinkedIn
+// profiles, team pages, career pages, and search targets for
+// proxy-based recon.
 
-import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal } from '../types';
+import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal, ConfidenceLevel } from '../types';
 import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
 import { extractNamedPeople, extractCompanyFields } from './peopleNameExtractor';
-// ─── ID Generator ─────────────────────────────────────────────
-
 let idCounter = 0;
 function uid(prefix = 'pq'): string {
   return `${prefix}-${++idCounter}-${Date.now().toString(36)}`;
@@ -382,7 +381,6 @@ export function extractEmployeesFromLinkedInText(
       });
     }
   }
-
   // ── Fallback: original regex-based extraction for missed names ──
   const lines = text.split('\n');
   const nameRolePattern = /([A-Z][a-z]+\s+[A-Z][a-z]+)\s*[|\-–—,]+\s*([A-Za-z][A-Za-z\s\/]+)/g;
@@ -414,6 +412,44 @@ export function extractEmployeesFromLinkedInText(
       seen.add(name.toLowerCase());
       employees.push({
         id: uid('emp'), name,
+        source: 'linkedin_employee_profile',
+        status: 'suggested',
+        confidence: 'Low',
+      });
+    }
+  }
+
+  // ── Narrative text: "Name is/was/joined/serves as Role" ──
+  // Catches names in LinkedIn About/overview narrative (not structured name–role pairs)
+  const stakeholderMentions = extractStakeholderMentions(text);
+  for (const sm of stakeholderMentions) {
+    if (seen.has(sm.name.toLowerCase())) continue;
+    seen.add(sm.name.toLowerCase());
+    employees.push({
+      id: uid('emp'),
+      name: sm.name,
+      role: sm.role,
+      department: sm.department || inferDepartmentFromRole(sm.role || ''),
+      source: 'linkedin_employee_profile',
+      status: 'suggested',
+      confidence: sm.confidence as ConfidenceLevel,
+    });
+  }
+
+  // ── Loose name matching: any capitalized Name LastName near role keywords ──
+  // This catches names in sentences like "led by John Smith" or "John Smith leads"
+  const looseNamePattern = /([A-Z][a-z]+\s+[A-Z][a-z'-]+(?:\s+[A-Z][a-z'-]+)?)/g;
+  while ((match = looseNamePattern.exec(text)) !== null) {
+    const candidate = match[1].trim();
+    if (seen.has(candidate.toLowerCase())) continue;
+    if (!isLikelyPersonName(candidate) || candidate.length <= 3) continue;
+    // Check 100-char window around the name for role keywords
+    const idx = match.index;
+    const window = text.slice(Math.max(0, idx - 50), Math.min(text.length, idx + candidate.length + 100));
+    if (hasRoleKeywordNearby(window)) {
+      seen.add(candidate.toLowerCase());
+      employees.push({
+        id: uid('emp'), name: candidate,
         source: 'linkedin_employee_profile',
         status: 'suggested',
         confidence: 'Low',

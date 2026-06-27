@@ -1,13 +1,33 @@
 // ============================================================
 // Sample Companies for Testing
 // ============================================================
-import type { Company, Stakeholder, PainPoint, Tool, HighlanderRepurpose, Opportunity } from '../types';
+import type { Company } from '../types';
 
 const now = new Date().toISOString();
+
+const pipelineDefaults = {
+  accountType: 'client_lead' as const,
+  productLane: 'builder' as const,
+  pipelineStatus: 'new' as const,
+  owner: '',
+  priority: 'unset' as const,
+  nextAction: '',
+  nextActionDate: '',
+  lastContactedAt: '',
+  sourceCampaign: '',
+  utmSource: '',
+  utmMedium: '',
+  utmCampaign: '',
+  utmContent: '',
+  hubspotLifecycleStage: '',
+  hubspotDealStage: '',
+  comments: [],
+};
 
 // ============== TechFlow Solutions ==============
 export const techFlowSolutions: Company = {
   id: 'sample-techflow',
+  ...pipelineDefaults,
   basic: {
     name: 'TechFlow Solutions',
     website: 'techflowsolutions.com',
@@ -83,11 +103,13 @@ export const techFlowSolutions: Company = {
   publicIntelSignals: [],
   publicIntelOpenings: [],
   isSample: true,
+  productLane: 'builder' as const,
 };
 
 // ============== BrightPath Consulting ==============
 export const brightPathConsulting: Company = {
   id: 'sample-brightpath',
+  ...pipelineDefaults,
   basic: {
     name: 'BrightPath Consulting',
     website: 'brightpathconsult.com',
@@ -163,11 +185,13 @@ export const brightPathConsulting: Company = {
   publicIntelSignals: [],
   publicIntelOpenings: [],
   isSample: true,
+  productLane: 'relay' as const,
 };
 
 // ============== GreenLeaf Landscaping ==============
 export const greenLeafLandscaping: Company = {
   id: 'sample-greenleaf',
+  ...pipelineDefaults,
   basic: {
     name: 'GreenLeaf Landscaping',
     website: 'greenleaflandscaping.net',
@@ -248,6 +272,7 @@ export const greenLeafLandscaping: Company = {
 // ============== A Storm is Coming LLC ==============
 export const aStormIsComing: Company = {
   id: 'sample-astorm',
+  ...pipelineDefaults,
   basic: {
     name: 'A Storm is Coming LLC',
     website: 'https://astormscoming.com',

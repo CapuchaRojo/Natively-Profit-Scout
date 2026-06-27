@@ -83,6 +83,11 @@ export default function CompanyProfilePage() {
         </div>
       </div>
 
+      {/* Recon Intelligence Card */}
+      {(company.aggressiveRecon || company.reconFindings) && (
+        <ReconIntelCard company={company} />
+      )}
+
       {/* Research Notes */}
       {company.basic.notes && (
         <div className="card mb-6">
@@ -209,6 +214,191 @@ function MaturityBar({ label, level }: { label: string; level: string }) {
           />
         </div>
         <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap', minWidth: 80, textAlign: 'right' }}>{level}</span>
+      </div>
+    </div>
+  );
+}
+
+function ReconIntelCard({ company }: { company: Company }) {
+  const navigate = useNavigate();
+  const ar = company.aggressiveRecon;
+  const rf = company.reconFindings;
+
+  // Helper to extract signal types
+  const allSearchSignals = ar?.searchIntel?.flatMap(si => si.signals) || [];
+  const allNewsSignals = ar?.newsIntel?.flatMap(ni => ni.signals) || [];
+  const growthSignals = allSearchSignals.filter(s => s.type === 'funding' || s.type === 'expansion' || s.type === 'growth');
+  const riskSignals = allSearchSignals.filter(s => s.type === 'layoffs' || s.type === 'restructuring');
+  const partnershipSignals = allSearchSignals.filter(s => s.type === 'partnership');
+
+  const hasReconData = !!(ar || rf?.detectedTools?.length || rf?.inferredWorkflows?.length || rf?.peopleSignals?.roleMap?.length);
+
+  if (!hasReconData) return null;
+
+  return (
+    <div className="card mb-6" style={{ borderColor: 'rgba(16,185,129,0.25)' }}>
+      <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="input-label" style={{ margin: 0 }}>
+          📊 Recon Intelligence
+          {ar && <span style={{ fontSize: 10, color: '#10b981', marginLeft: 8 }}>Aggressive Recon</span>}
+        </span>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => navigate(`/company/${company.id}/recon`)}
+          style={{ fontSize: 11, cursor: 'pointer' }}
+        >
+          Open Full Recon →
+        </button>
+      </div>
+      <div className="card-body" style={{ display: 'grid', gap: 12 }}>
+        {/* Summary Stats */}
+        {ar && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8 }}>
+            {ar.extractedPeople.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '6px 4px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: '1px solid rgba(16,185,129,0.15)' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981' }}>{ar.extractedPeople.length}</div>
+                <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>People</div>
+              </div>
+            )}
+            {ar.linkedInJobs.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '6px 4px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: '1px solid rgba(59,130,246,0.15)' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#3b82f6' }}>{ar.linkedInJobs.length}</div>
+                <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Jobs</div>
+              </div>
+            )}
+            {allSearchSignals.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '6px 4px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: '1px solid rgba(6,182,212,0.15)' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#06b6d4' }}>{allSearchSignals.length}</div>
+                <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Signals</div>
+              </div>
+            )}
+            {allNewsSignals.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '6px 4px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: '1px solid rgba(168,85,247,0.15)' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#a855f7' }}>{allNewsSignals.length}</div>
+                <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>News</div>
+              </div>
+            )}
+            {ar.socialDiscoveryUrls?.length > 0 && (
+              <div style={{ textAlign: 'center', padding: '6px 4px', background: 'rgba(10,14,23,0.5)', borderRadius: 6, border: '1px solid rgba(245,158,11,0.15)' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#f59e0b' }}>{ar.socialDiscoveryUrls.length}</div>
+                <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase' }}>Social</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Summary text */}
+        {ar?.summary && (
+          <div style={{ fontSize: 12, color: '#10b981', padding: '8px 10px', background: 'rgba(16,185,129,0.06)', borderRadius: 6, border: '1px solid rgba(16,185,129,0.15)' }}>
+            {ar.summary}
+          </div>
+        )}
+
+        {/* Extracted People (top 5) */}
+        {ar?.extractedPeople?.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 4 }}>
+              Key People ({ar.extractedPeople.length})
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {ar.extractedPeople.slice(0, 8).map((p, i) => (
+                <span key={i} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.2)' }}>
+                  {p.name}{p.role ? ` · ${p.role}` : ''}
+                </span>
+              ))}
+              {ar.extractedPeople.length > 8 && (
+                <span style={{ fontSize: 10, color: '#64748b' }}>+{ar.extractedPeople.length - 8} more</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* LinkedIn Company snippet */}
+        {ar?.linkedInCompany && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 12 }}>
+            {ar.linkedInCompany.industry && (
+              <span><span style={{ color: '#64748b' }}>Industry:</span> <span style={{ color: '#e2e8f0' }}>{ar.linkedInCompany.industry}</span></span>
+            )}
+            {ar.linkedInCompany.employeeRange && (
+              <span><span style={{ color: '#64748b' }}>Size:</span> <span style={{ color: '#e2e8f0' }}>{ar.linkedInCompany.employeeRange}</span></span>
+            )}
+            {ar.linkedInCompany.headquarters && (
+              <span><span style={{ color: '#64748b' }}>HQ:</span> <span style={{ color: '#e2e8f0' }}>{ar.linkedInCompany.headquarters}</span></span>
+            )}
+          </div>
+        )}
+
+        {/* Growth indicators */}
+        {ar?.linkedInCompany?.growthIndicators?.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {ar.linkedInCompany.growthIndicators.slice(0, 6).map((g, i) => (
+              <span key={i} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.2)' }}>
+                {g}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Key Signals (growth, risk, partnership) */}
+        {growthSignals.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2 }}>Growth Signals</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {growthSignals.slice(0, 3).map((s, i) => (
+                <div key={i} style={{ fontSize: 11, color: '#e2e8f0' }}>
+                  <span style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, background: 'rgba(16,185,129,0.12)', color: '#10b981', marginRight: 6 }}>{s.type}</span>
+                  {s.title}{s.nativelyAngle && <span style={{ color: '#10b981', marginLeft: 6 }}>→ {s.nativelyAngle}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {riskSignals.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 2 }}>Risk Signals</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {riskSignals.slice(0, 3).map((s, i) => (
+                <div key={i} style={{ fontSize: 11, color: '#e2e8f0' }}>
+                  <span style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, background: 'rgba(239,68,68,0.1)', color: '#ef4444', marginRight: 6 }}>{s.type}</span>
+                  {s.title}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recon findings summary (tools, workflows, people signals) */}
+        {!ar && rf && (
+          <div style={{ display: 'flex', gap: 16, fontSize: 12, flexWrap: 'wrap' }}>
+            {rf.detectedTools?.length > 0 && (
+              <span><span style={{ color: '#64748b' }}>Tools:</span> <span style={{ color: '#e2e8f0' }}>{rf.detectedTools.length}</span></span>
+            )}
+            {rf.inferredWorkflows?.length > 0 && (
+              <span><span style={{ color: '#64748b' }}>Workflows:</span> <span style={{ color: '#e2e8f0' }}>{rf.inferredWorkflows.length}</span></span>
+            )}
+            {rf.peopleSignals?.roleMap?.length > 0 && (
+              <span><span style={{ color: '#64748b' }}>Roles:</span> <span style={{ color: '#e2e8f0' }}>{rf.peopleSignals.roleMap.length}</span></span>
+            )}
+            {rf.openings?.length > 0 && (
+              <span><span style={{ color: '#64748b' }}>Openings:</span> <span style={{ color: '#e2e8f0' }}>{rf.openings.length}</span></span>
+            )}
+            <span style={{ color: '#64748b', fontSize: 10 }}>Scanned: {new Date(rf.scanDate).toLocaleDateString()}</span>
+          </div>
+        )}
+
+        {/* Social links */}
+        {ar?.socialDiscoveryUrls?.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {ar.socialDiscoveryUrls.filter(u => u.confidence !== 'Low').slice(0, 5).map((u, i) => (
+              <a key={i} href={u.url} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, background: 'rgba(59,130,246,0.08)', color: '#3b82f6', border: '1px solid rgba(59,130,246,0.2)', textDecoration: 'none', cursor: 'pointer' }}
+              >
+                {u.platform}
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

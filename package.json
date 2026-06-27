@@ -14,7 +14,10 @@
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.1.18",
     "react-router-dom": "^7.18.0",
-    "ninjapear": "^1.6.0"
+    "ninjapear": "^1.6.0",
+    "lucide-react": "^1.21.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

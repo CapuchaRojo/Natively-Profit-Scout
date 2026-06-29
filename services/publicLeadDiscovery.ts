@@ -88,6 +88,10 @@ function createSeedCandidate(name: string, input: DiscoveryInput): PipelineDisco
     else if (/\b(cloud|hosting)\b/i.test(name)) providerType = 'cloud_partner';
     else if (/\b(edge)\b/i.test(name)) providerType = 'edge_compute';
     else if (/\b(hardware)\b/i.test(name)) providerType = 'hardware_partner';
+    else if (/\b(chip|silicon|semiconductor|fabrication|foundry)\b/i.test(name)) providerType = 'chip_manufacturer';
+    else if (/\b(reseller|infrastructure.*resale|capacity.*partner)\b/i.test(name)) providerType = 'infrastructure_reseller';
+    else if (/\b(hyperscale|aws|azure|gcp|google.*cloud|amazon.*web)\b/i.test(name)) providerType = 'hyperscaler';
+    else if (/\b(neo.?cloud|next.?gen.*cloud|cloud.*native.*infra)\b/i.test(name)) providerType = 'neo_cloud';
     else providerType = 'unknown';
   }
 

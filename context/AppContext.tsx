@@ -3,6 +3,7 @@
 // ============================================================
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import type { Company, AppSettings, DashboardMetrics, NewAnalysisData, PublicIntelSource, PublicIntelSignal, PublicIntelOpening } from '../types';
+import type { ImportResult } from '../services/providerImportParser';
 import { sampleCompanies } from '../data/sampleCompanies';
 import { generateFullAnalysis, calculateOpportunityScore, calculateFitScore, calculatePainScore, calculateUrgencyScore } from '../services/analysisEngine';
 import { generateOnePageBrief } from '../services/exportUtilities';
@@ -86,6 +87,15 @@ function normalizeCompany(c: Company): Company {
     highladerRepurpose: c.highladerRepurpose || [],
     opportunities: c.opportunities || [],
     comments: c.comments || [],
+    contacts: (c.contacts || []).map(ct => ({
+      ...ct,
+      id: ct.id || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      fullName: ct.fullName || `${ct.firstName || ''} ${ct.lastName || ''}`.trim(),
+      isPrimary: ct.isPrimary ?? false,
+      source: ct.source || 'import',
+    })),
+    sourceImport: c.sourceImport || '',
+    importedAt: c.importedAt || '',
     accountType: c.accountType || 'unknown',
     productLane: c.productLane || 'unknown',
     pipelineStatus: c.pipelineStatus || 'new',
@@ -196,6 +206,7 @@ interface AppContextType {
   addPublicIntelOpenings: (companyId: string, openings: PublicIntelOpening[]) => void;
   clearPublicIntelForCompany: (companyId: string) => void;
   addCompany: (company: Company) => void;
+  bulkImportCompanies: (results: ImportResult[]) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -256,7 +267,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     saveStateToLocal(state);
   }, [state]);
 
-  // ── Persist to Supabase (debounced per-company on relevant changes) ──
+  // ── Persist to Supabase (debounced on relevant changes) ──
   useEffect(() => {
     if (!state.dbSynced) return;
 
@@ -280,7 +291,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
       publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
       reconFindings: undefined,
-      comments: [],
+      comments: [], contacts: [],
+      sourceImport: '', importedAt: '',
       accountType: 'unknown', productLane: 'unknown', pipelineStatus: 'new',
       owner: '', priority: 'unset', nextAction: '', nextActionDate: '', lastContactedAt: '',
       sourceCampaign: '', utmSource: '', utmMedium: '', utmCampaign: '', utmContent: '',
@@ -387,12 +399,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'ADD_COMPANY', payload: company });
   }, []);
 
+  const bulkImportCompanies = useCallback((results: ImportResult[]) => {
+    for (const result of results) {
+      if (result.action === 'create') {
+        dispatch({ type: 'ADD_COMPANY', payload: result.company });
+      } else if (result.action === 'update') {
+        dispatch({ type: 'UPDATE_COMPANY', payload: { id: result.company.id, updates: result.company } });
+      }
+      // 'skip' — do nothing
+    }
+  }, []);
+
   const value: AppContextType = {
     state, createCompany, updateCompany, deleteCompany, getCompany, setCurrentCompany,
     updateSettings, regenerateAnalysis, getDashboardMetrics, getOnePageBrief,
     addPublicIntelSource, updatePublicIntelSource, deletePublicIntelSource,
     addPublicIntelSignals, addPublicIntelOpenings, clearPublicIntelForCompany,
-    addCompany,
+    addCompany, bulkImportCompanies,
   };
 
   return (

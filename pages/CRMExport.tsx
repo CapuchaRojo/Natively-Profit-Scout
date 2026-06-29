@@ -34,12 +34,17 @@ const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
 const PIPELINE_STATUS_LABELS: Record<PipelineStatus, string> = {
   new: 'New',
   researching: 'Researching',
+  research: 'Research',
   qualified: 'Qualified',
   contacted: 'Contacted',
+  meeting: 'Meeting',
   meeting_booked: 'Meeting Booked',
   active_conversation: 'Active Conversation',
+  nda_diligence: 'NDA / Diligence',
+  qualified_constituent: 'Qualified Constituent',
   not_fit: 'Not a Fit',
   follow_up_later: 'Follow Up Later',
+  monitor: 'Monitor',
   converted: 'Converted',
   archived: 'Archived',
 };

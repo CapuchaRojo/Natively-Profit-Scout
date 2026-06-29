@@ -354,6 +354,10 @@ export interface Company {
   comments: ScoutComment[];
   providerProfile?: ProviderProfile;
   fitScore?: FitScore;
+  // Bulk provider import fields (v1.2)
+  sourceImport: string;
+  importedAt: string;
+  contacts: ProviderContact[];
 }
 
 export interface AppSettings {
@@ -886,12 +890,17 @@ export type ProductLane =
 export type PipelineStatus =
   | 'new'
   | 'researching'
+  | 'research'
   | 'qualified'
   | 'contacted'
+  | 'meeting'
   | 'meeting_booked'
   | 'active_conversation'
-  | 'not_fit'
+  | 'nda_diligence'
+  | 'qualified_constituent'
   | 'follow_up_later'
+  | 'not_fit'
+  | 'monitor'
   | 'converted'
   | 'archived';
 
@@ -902,8 +911,10 @@ export type ProviderType =
   | 'edge_compute'
   | 'hardware_partner'
   | 'infrastructure_reseller'
+  | 'chip_manufacturer'
+  | 'hyperscaler'
+  | 'neo_cloud'
   | 'unknown';
-
 export type CommentType =
   | 'general_note'
   | 'call_note'
@@ -951,6 +962,23 @@ export interface FitScore {
   providerFit: number;
   reasons: string[];
   evidenceUrls: string[];
+}
+
+// ============================================================
+// Bulk Provider Import Types (v1.2)
+// ============================================================
+
+export interface ProviderContact {
+  id: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  position: string;
+  email: string;
+  phone: string;
+  relationshipNote: string;
+  isPrimary: boolean;
+  source: string;
 }
 
 export interface PipelineDiscoveryCandidate {

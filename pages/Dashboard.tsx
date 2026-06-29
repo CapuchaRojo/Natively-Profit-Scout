@@ -45,12 +45,17 @@ const PRODUCT_LANE_LABELS: Record<ProductLane, string> = {
 const PIPELINE_STATUS_LABELS: Record<PipelineStatus, string> = {
   new: 'New',
   researching: 'Researching',
+  research: 'Research',
   qualified: 'Qualified',
   contacted: 'Contacted',
+  meeting: 'Meeting',
   meeting_booked: 'Meeting Booked',
   active_conversation: 'Active Conversation',
+  nda_diligence: 'NDA / Diligence',
+  qualified_constituent: 'Qualified Constituent',
   not_fit: 'Not a Fit',
   follow_up_later: 'Follow Up Later',
+  monitor: 'Monitor',
   converted: 'Converted',
   archived: 'Archived',
 };
@@ -65,12 +70,17 @@ const PRIORITY_COLORS: Record<string, string> = {
 const PIPELINE_STATUS_COLORS: Record<PipelineStatus, string> = {
   new: '#64748b',
   researching: '#3b82f6',
+  research: '#6366f1',
   qualified: '#8b5cf6',
   contacted: '#f59e0b',
+  meeting: '#10b981',
   meeting_booked: '#06b6d4',
   active_conversation: '#10b981',
+  nda_diligence: '#f97316',
+  qualified_constituent: '#06b6d4',
   not_fit: '#ef4444',
   follow_up_later: '#f97316',
+  monitor: '#a3a3a3',
   converted: '#22c55e',
   archived: '#6b7280',
 };
@@ -136,7 +146,7 @@ export default function Dashboard() {
 
     const acctTypeCounts = countBy(accountTypes, ['client_lead', 'compute_provider', 'partner', 'internal_target', 'unknown'] as const);
     const laneCounts = countBy(productLanes, ['builder', 'compute', 'relay', 'multiple', 'unknown'] as const);
-    const statusCounts = countBy(statuses, ['new', 'researching', 'qualified', 'contacted', 'meeting_booked', 'active_conversation', 'not_fit', 'follow_up_later', 'converted', 'archived'] as const);
+    const statusCounts = countBy(statuses, ['new', 'researching', 'research', 'qualified', 'contacted', 'meeting', 'meeting_booked', 'active_conversation', 'nda_diligence', 'qualified_constituent', 'not_fit', 'follow_up_later', 'monitor', 'converted', 'archived'] as const);
     const priorityCounts = countBy(priorities, ['high', 'medium', 'low', 'unset'] as const);
 
     // Owner counts
@@ -157,7 +167,7 @@ export default function Dashboard() {
     return { acctTypeCounts, laneCounts, statusCounts, priorityCounts, ownerEntries, avgFit, topFit };
   }, [companies]);
 
-  const activePipelineStages = (['new', 'researching', 'qualified', 'contacted', 'meeting_booked', 'active_conversation'] as PipelineStatus[])
+  const activePipelineStages = (['new', 'researching', 'research', 'qualified', 'contacted', 'meeting', 'meeting_booked', 'active_conversation', 'nda_diligence', 'qualified_constituent', 'monitor'] as PipelineStatus[])
     .reduce((sum, s) => sum + (pipelineStats.statusCounts[s] || 0), 0);
 
   return (

@@ -1,7 +1,7 @@
 // ============================================================
-// Pipeline Scout Page (v1.2 — Bulk Provider Import)
+// Pipeline Scout Page (v1.3 — Event Import + Bulk Provider Import)
 // ============================================================
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
@@ -17,7 +17,7 @@ import {
 } from '../services/publicLeadDiscovery';
 import {
   Radar, Clock,
-  Upload, FileSpreadsheet, Download, AlertTriangle, CheckCircle, X, ChevronDown, ChevronUp,
+  Upload, FileSpreadsheet, Download, AlertTriangle, CheckCircle, X, ChevronDown, ChevronUp, FileText, BookmarkCheck,
 } from 'lucide-react';
 import {
   parseWorkbookFile,
@@ -27,10 +27,14 @@ import {
   validateRow,
   computeImportStats,
 } from '../services/providerImportParser';
+import {
+  parseEventMarkdown,
+  deduplicateCandidates,
+} from '../services/eventMarkdownParser';
 import type { ImportResult, ImportStats, ImportWarning } from '../services/providerImportParser';
 import type {
   AccountType, ProductLane, PipelineStatus, ProviderType, Company,
-  ScoutComment, PipelineDiscoveryCandidate,
+  ScoutComment, PipelineDiscoveryCandidate, EventDiscoveryCandidate,
 } from '../types';
 
 const accountTypeLabels: Record<AccountType, string> = {
@@ -148,13 +152,42 @@ export default function PipelineScoutPage() {
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Collapsible section state for review screen
+  // ── Event Import state ───────────────────────────────────────
+  const [eventImportMode, setEventImportMode] = useState(false);
+  const [eventMarkdown, setEventMarkdown] = useState('');
+  const [eventName, setEventName] = useState('');
+  const [eventFile, setEventFile] = useState<File | null>(null);
+  const [eventDragOver, setEventDragOver] = useState(false);
+  const [eventParsing, setEventParsing] = useState(false);
+  const [eventCandidates, setEventCandidates] = useState<EventDiscoveryCandidate[]>([]);
+  const [eventProcessing, setEventProcessing] = useState(false);
+  const [eventStep, setEventStep] = useState<'paste' | 'parsing' | 'review'>('paste');
+  const [eventError, setEventError] = useState<string | null>(null);
+  const [selectedForImport, setSelectedForImport] = useState<Set<string>>(new Set());
+  const eventFileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Research Queue state ────────────────────────────────────
+  const [showResearchQueue, setShowResearchQueue] = useState(false);
+  const [researchQueueCandidates, setResearchQueueCandidates] = useState<EventDiscoveryCandidate[]>([]);
+  const [researchQueueSelectedIds, setResearchQueueSelectedIds] = useState<Set<string>>(new Set());
+  const [researchQueueProcessing, setResearchQueueProcessing] = useState(false);
+
+  // Load research queue from localStorage
+  const loadResearchQueue = useCallback(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('profit-scout-event-research-queue') || '[]');
+      setResearchQueueCandidates(raw);
+      return raw.length;
+    } catch { return 0; }
+  }, []);
+
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     byType: false,
     byPriority: false,
     byOwner: false,
     warnings: true,
   });
+
 
   // Source import filter options
   const sourceImportOptions = useMemo(() => {
@@ -184,7 +217,6 @@ export default function PipelineScoutPage() {
     : undefined;
 
   // ── Import handlers ─────────────────────────────────────────
-
   const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setImportDragOver(false);
@@ -462,6 +494,378 @@ export default function PipelineScoutPage() {
     withRecon: companies.filter(c => !!c.aggressiveRecon).length,
   }), [companies]);
 
+  // ── Event Import handlers ────────────────────────────────────
+
+  const handleEventFileDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setEventDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file && (file.name.endsWith('.txt') || file.name.endsWith('.md'))) {
+      setEventFile(file);
+      setEventError(null);
+      // Read file content and fill textarea
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const text = ev.target?.result as string;
+        setEventMarkdown(text);
+        setEventName(guessEventNameFromFile(file.name));
+      };
+      reader.readAsText(file);
+    } else {
+      setEventError('Please upload a .txt or .md file');
+    }
+  };
+
+  const handleEventFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setEventFile(file);
+      setEventError(null);
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const text = ev.target?.result as string;
+        setEventMarkdown(text);
+        setEventName(guessEventNameFromFile(file.name));
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  function guessEventNameFromFile(fileName: string): string {
+    return fileName
+      .replace(/\.(txt|md)$/i, '')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  const handleParseEventMarkdown = () => {
+    if (!eventMarkdown.trim()) return;
+    setEventParsing(true);
+    setEventError(null);
+    setEventStep('parsing');
+
+    try {
+      const candidates = parseEventMarkdown(eventMarkdown, eventFile?.name || 'Pasted text');
+      const existingNames = companies.map(c => c.basic.name);
+      const deduped = deduplicateCandidates(candidates, existingNames);
+
+      setEventCandidates(deduped);
+      // Default: select all non-duplicate candidates
+      const defaultSelected = new Set(
+        deduped.filter(c => !c.matchedExistingCompanyId).map(c => c.id)
+      );
+      setSelectedForImport(defaultSelected);
+      setEventStep('review');
+      showToast(`Parsed ${candidates.length} companies from event list`, 'success');
+    } catch (err: any) {
+      setEventError(err?.message || 'Failed to parse event markdown');
+      setEventStep('paste');
+    } finally {
+      setEventParsing(false);
+    }
+  };
+
+  const handleToggleSelectCandidate = (id: string) => {
+    setSelectedForImport(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllCandidates = () => {
+    setSelectedForImport(new Set(eventCandidates.map(c => c.id)));
+  };
+
+  const handleDeselectAllCandidates = () => {
+    setSelectedForImport(new Set());
+  };
+
+  const handleUpdateCandidateField = (id: string, field: string, value: string) => {
+    setEventCandidates(prev => prev.map(c =>
+      c.id === id ? { ...c, [field]: value } : c
+    ));
+  };
+
+  const handleImportSelectedToPipeline = () => {
+    const selected = eventCandidates.filter(c => selectedForImport.has(c.id));
+    if (selected.length === 0) {
+      showToast('No candidates selected for import', 'error');
+      return;
+    }
+    setEventProcessing(true);
+    const now = new Date().toISOString();
+    let imported = 0;
+
+    for (const candidate of selected) {
+      const id = `company-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${imported}`;
+      const sourceTag = `event_${(candidate.eventName || eventName || 'unknown').replace(/\s+/g, '_').toLowerCase()}`;
+
+      const company = {
+        id,
+        basic: {
+          name: candidate.companyName,
+          website: candidate.website,
+          industry: candidate.industry || '',
+          location: '',
+          employeeCount: 0,
+          revenueEstimate: '',
+          notes: [
+            candidate.description,
+            candidate.extractedPeople.length > 0
+              ? `People: ${candidate.extractedPeople.map(p => p.name + (p.role ? ` (${p.role})` : '')).join(', ')}`
+              : '',
+            candidate.extractedTechStack.length > 0
+              ? `Tech: ${candidate.extractedTechStack.join(', ')}`
+              : '',
+            candidate.editableNotes,
+          ].filter(Boolean).join('\n'),
+        },
+        business: { productsServices: '', targetCustomers: '', salesModel: '', deliveryModel: '', supportModel: '', operationsModel: '' },
+        people: { leadership: '', salesTeam: '', technicalTeam: '', operationsTeam: '', supportTeam: '', financeAdmin: '', knownChampions: '', knownBlockers: '', unknownDecisionMaker: '' },
+        tools: { crm: '', websitePlatform: '', schedulingTools: '', emailTools: '', projectManagement: '', communicationTools: '', supportTools: '', billingTools: '', automationTools: '', aiTools: '', securityTools: '', unknownTools: '' },
+        workloadFriction: { dailyRepeats: '', manualCopyPaste: '', delays: '', customerWait: '', employeeTimeWaste: '', missedRevenue: '', errors: '', complianceRisk: '', softwareCouldAssist: '' },
+        salesContext: { approachReason: '', likelyBusinessPain: '', desiredResult: '', budgetOwner: '', painFeeler: '', dealBlocker: '', dealChampion: '' },
+        painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
+        publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
+        comments: [],
+        accountType: candidate.suggestedAccountType,
+        productLane: candidate.suggestedProductLane,
+        pipelineStatus: 'new' as PipelineStatus,
+        owner: '',
+        priority: candidate.confidence === 'High' ? 'high' as const : 'medium' as const,
+        nextAction: '', nextActionDate: '', lastContactedAt: '',
+        sourceCampaign: sourceTag,
+        utmSource: '', utmMedium: '', utmCampaign: '', utmContent: '',
+        hubspotLifecycleStage: '', hubspotDealStage: '',
+        sourceImport: sourceTag,
+        importedAt: now,
+        contacts: candidate.extractedPeople.map(p => ({
+          id: `contact-${id}-${Math.random().toString(36).slice(2, 6)}`,
+          firstName: p.name.split(' ')[0] || '',
+          lastName: p.name.split(' ').slice(1).join(' ') || '',
+          fullName: p.name,
+          position: p.role || '',
+          email: '',
+          phone: '',
+          relationshipNote: `From event: ${candidate.eventName || eventName || 'Event list'}`,
+          isPrimary: true,
+          source: sourceTag,
+        })),
+        createdAt: now, updatedAt: now,
+        isSample: false,
+      };
+
+      addCompany(company as Company);
+      imported++;
+    }
+
+    // Mark imported candidates
+    setEventCandidates(prev => prev.map(c =>
+      selectedForImport.has(c.id) ? { ...c, status: 'imported' as const } : c
+    ));
+
+    setEventProcessing(false);
+    showToast(`✅ Imported ${imported} companies from event list to pipeline`, 'success');
+  };
+
+  const handleSendToResearchQueue = () => {
+    const selected = eventCandidates.filter(c => selectedForImport.has(c.id));
+    if (selected.length === 0) {
+      showToast('No candidates selected for research queue', 'error');
+      return;
+    }
+
+    // Persist research queue to localStorage
+    try {
+      const existing = JSON.parse(localStorage.getItem('profit-scout-event-research-queue') || '[]');
+      const updated = [
+        ...existing,
+        ...selected.map(c => ({ ...c, status: 'research_queue' as const, savedAt: new Date().toISOString() })),
+      ];
+      localStorage.setItem('profit-scout-event-research-queue', JSON.stringify(updated));
+
+      setEventCandidates(prev => prev.map(c =>
+        selectedForImport.has(c.id) ? { ...c, status: 'research_queue' as const } : c
+      ));
+      showToast(`📋 ${selected.length} saved to Research Queue`, 'success');
+    } catch {
+      showToast('Failed to save research queue', 'error');
+    }
+  };
+
+  const handleClearEventMarkdown = () => {
+    setEventMarkdown('');
+    setEventFile(null);
+    setEventError(null);
+  };
+
+  const handleDismissEventImport = () => {
+    setEventImportMode(false);
+    setEventMarkdown('');
+    setEventName('');
+    setEventFile(null);
+    setEventCandidates([]);
+    setSelectedForImport(new Set());
+    setEventError(null);
+    setEventStep('paste');
+  };
+
+  // ── Research Queue handlers ──────────────────────────────────
+
+  const handleToggleResearchQueueTab = () => {
+    const next = !showResearchQueue;
+    setShowResearchQueue(next);
+    if (next) {
+      loadResearchQueue();
+      setResearchQueueSelectedIds(new Set());
+    }
+  };
+
+  const handleToggleRQSelectCandidate = (id: string) => {
+    setResearchQueueSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllRQ = () => {
+    setResearchQueueSelectedIds(new Set(researchQueueCandidates.map(c => c.id)));
+  };
+
+  const handleDeselectAllRQ = () => {
+    setResearchQueueSelectedIds(new Set());
+  };
+
+  const handleUpdateRQField = (id: string, field: string, value: string) => {
+    const updated = researchQueueCandidates.map(c =>
+      c.id === id ? { ...c, [field]: value } : c
+    );
+    setResearchQueueCandidates(updated);
+    try {
+      localStorage.setItem('profit-scout-event-research-queue', JSON.stringify(updated));
+    } catch { /* ignore */ }
+  };
+
+  const handleImportSelectedRQToPipeline = () => {
+    const selected = researchQueueCandidates.filter(c => researchQueueSelectedIds.has(c.id));
+    if (selected.length === 0) {
+      showToast('No candidates selected for import', 'error');
+      return;
+    }
+    setResearchQueueProcessing(true);
+
+    const now = new Date().toISOString();
+    let imported = 0;
+
+    for (const candidate of selected) {
+      const id = `company-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-rq-${imported}`;
+      const eventName = candidate.eventName || 'Research Queue';
+      const sourceTag = `research_queue_${eventName.replace(/\s+/g, '_').toLowerCase()}`;
+
+      const company = {
+        id,
+        basic: {
+          name: candidate.companyName,
+          website: candidate.website,
+          industry: candidate.industry || '',
+          location: '',
+          employeeCount: 0,
+          revenueEstimate: '',
+          notes: [
+            candidate.description,
+            candidate.extractedPeople.length > 0
+              ? `People: ${candidate.extractedPeople.map(p => p.name + (p.role ? ` (${p.role})` : '')).join(', ')}`
+              : '',
+            candidate.extractedTechStack.length > 0
+              ? `Tech: ${candidate.extractedTechStack.join(', ')}`
+              : '',
+            candidate.editableNotes,
+          ].filter(Boolean).join('\n'),
+        },
+        business: { productsServices: '', targetCustomers: '', salesModel: '', deliveryModel: '', supportModel: '', operationsModel: '' },
+        people: { leadership: '', salesTeam: '', technicalTeam: '', operationsTeam: '', supportTeam: '', financeAdmin: '', knownChampions: '', knownBlockers: '', unknownDecisionMaker: '' },
+        tools: { crm: '', websitePlatform: '', schedulingTools: '', emailTools: '', projectManagement: '', communicationTools: '', supportTools: '', billingTools: '', automationTools: '', aiTools: '', securityTools: '', unknownTools: '' },
+        workloadFriction: { dailyRepeats: '', manualCopyPaste: '', delays: '', customerWait: '', employeeTimeWaste: '', missedRevenue: '', errors: '', complianceRisk: '', softwareCouldAssist: '' },
+        salesContext: { approachReason: '', likelyBusinessPain: '', desiredResult: '', budgetOwner: '', painFeeler: '', dealBlocker: '', dealChampion: '' },
+        painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
+        publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
+        comments: [],
+        accountType: candidate.suggestedAccountType,
+        productLane: candidate.suggestedProductLane,
+        pipelineStatus: 'new' as PipelineStatus,
+        owner: '',
+        priority: candidate.confidence === 'High' ? 'high' as const : 'medium' as const,
+        nextAction: '', nextActionDate: '', lastContactedAt: '',
+        sourceCampaign: sourceTag,
+        utmSource: '', utmMedium: '', utmCampaign: '', utmContent: '',
+        hubspotLifecycleStage: '', hubspotDealStage: '',
+        sourceImport: sourceTag,
+        importedAt: now,
+        contacts: candidate.extractedPeople.map(p => ({
+          id: `contact-${id}-${Math.random().toString(36).slice(2, 6)}`,
+          firstName: p.name.split(' ')[0] || '',
+          lastName: p.name.split(' ').slice(1).join(' ') || '',
+          fullName: p.name,
+          position: p.role || '',
+          email: '',
+          phone: '',
+          relationshipNote: `From research queue: ${eventName}`,
+          isPrimary: true,
+          source: sourceTag,
+        })),
+        createdAt: now, updatedAt: now,
+        isSample: false,
+      };
+
+      addCompany(company as Company);
+      imported++;
+    }
+
+    // Mark imported in localStorage
+    const updated = researchQueueCandidates.map(c =>
+      researchQueueSelectedIds.has(c.id) ? { ...c, status: 'imported' as const } : c
+    );
+    setResearchQueueCandidates(updated);
+    try {
+      localStorage.setItem('profit-scout-event-research-queue', JSON.stringify(updated));
+    } catch { /* ignore */ }
+
+    setResearchQueueProcessing(false);
+    setResearchQueueSelectedIds(new Set());
+    showToast(`✅ Imported ${imported} from Research Queue to pipeline`, 'success');
+  };
+
+  const handleRemoveSelectedRQ = () => {
+    const selected = researchQueueCandidates.filter(c => researchQueueSelectedIds.has(c.id));
+    if (selected.length === 0) {
+      showToast('No candidates selected for removal', 'error');
+      return;
+    }
+
+    const updated = researchQueueCandidates.filter(c => !researchQueueSelectedIds.has(c.id));
+    setResearchQueueCandidates(updated);
+    try {
+      localStorage.setItem('profit-scout-event-research-queue', JSON.stringify(updated));
+    } catch { /* ignore */ }
+    setResearchQueueSelectedIds(new Set());
+    showToast(`🗑️ Removed ${selected.length} from Research Queue`, 'success');
+  };
+
+  const handleMarkAsActionRQ = (id: string, action: 'imported' | 'skipped') => {
+    const updated = researchQueueCandidates.map(c =>
+      c.id === id ? { ...c, status: action as any } : c
+    );
+    setResearchQueueCandidates(updated);
+    try {
+      localStorage.setItem('profit-scout-event-research-queue', JSON.stringify(updated));
+    } catch { /* ignore */ }
+  };
+
   const toggleSection = (key: string) => {
     setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
@@ -482,7 +886,7 @@ export default function PipelineScoutPage() {
         subtitle="Client & Provider Pipeline Workspace"
         actions={
           <div style={{ display: 'flex', gap: 8 }}>
-            {!importMode && (
+            {!importMode && !eventImportMode && (
               <>
                 <button className="btn btn-primary btn-sm" onClick={() => setShowAddForm(!showAddForm)}>
                   {showAddForm ? 'Cancel' : '+ Add Account'}
@@ -497,6 +901,11 @@ export default function PipelineScoutPage() {
               style={importMode ? { background: 'linear-gradient(135deg, #3b82f6, #06b6d4)', color: '#fff' } : undefined}>
               {importMode ? <><X size={12} /> Close Import</> : <><Upload size={12} /> Import Providers</>}
             </button>
+            <button className="btn btn-secondary btn-sm"
+              onClick={() => eventImportMode ? handleDismissEventImport() : setEventImportMode(true)}
+              style={eventImportMode ? { background: 'linear-gradient(135deg, #06b6d4, #10b981)', color: '#fff' } : undefined}>
+              {eventImportMode ? <><X size={12} /> Close Event Import</> : <><FileText size={12} /> Import Event</>}
+            </button>
           </div>
         }
       />
@@ -507,7 +916,7 @@ export default function PipelineScoutPage() {
         This tool does not bypass logins, scrape LinkedIn, read private profiles, or access restricted content.
       </div>
 
-      {/* ══════════════ IMPORT MODE ══════════════ */}
+      {/* ══════════════ BULK PROVIDER IMPORT MODE ══════════════ */}
       {importMode && (
         <div className="card mb-4" style={{ borderColor: '#3b82f6' }}>
           <div className="card-header">
@@ -538,12 +947,25 @@ export default function PipelineScoutPage() {
                     {importFile ? importFile.name : 'Drop .xlsm/.xlsx file here or click to browse'}
                   </div>
                   <div style={{ fontSize: 11, color: '#64748b' }}>
-                    Accepts .xlsm, .xlsx, .csv — reads &ldquo;Providers&rdquo; sheet
+                    Accepts .xlsm, .xlsx, .csv — expects a sheet named <strong style={{ color: '#94a3b8' }}>"Providers"</strong>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#4a5568', marginTop: 4 }}>
+                    Expected format: Company Name in Column A, data starts at row 6
                   </div>
                 </div>
                 <input ref={fileInputRef} type="file" accept=".xlsx,.xlsm,.csv" onChange={handleFileSelect} style={{ display: 'none' }} />
                 {importError && (
-                  <div style={{ padding: '8px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, color: '#ef4444', fontSize: 12, marginBottom: 12 }}>
+                  <div style={{ 
+                    padding: '10px 14px', 
+                    background: 'rgba(239,68,68,0.08)', 
+                    border: '1px solid rgba(239,68,68,0.3)', 
+                    borderRadius: 6, 
+                    color: '#fca5a5', 
+                    fontSize: 12, 
+                    marginBottom: 12,
+                    lineHeight: 1.6,
+                    whiteSpace: 'pre-wrap'
+                  }}>
                     {importError}
                   </div>
                 )}
@@ -675,13 +1097,278 @@ export default function PipelineScoutPage() {
         </div>
       )}
 
+      {/* ══════════════ EVENT IMPORT MODE ══════════════ */}
+      {eventImportMode && !importMode && (
+        <div className="card mb-4" style={{ borderColor: '#06b6d4' }}>
+          <div className="card-header">
+            <span className="input-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <FileText size={16} style={{ color: '#06b6d4' }} />
+              Event Markdown Import
+            </span>
+            <span style={{ fontSize: 11, color: '#64748b' }}>
+              Parse .txt/.md files from event attendee/sponsor lists
+            </span>
+          </div>
+          <div className="card-body">
+
+            {eventStep === 'paste' && (
+              <>
+                {/* File upload area */}
+                <div onDragOver={e => { e.preventDefault(); setEventDragOver(true); }}
+                  onDragLeave={() => setEventDragOver(false)}
+                  onDrop={handleEventFileDrop}
+                  onClick={() => eventFileInputRef.current?.click()}
+                  style={{
+                    border: `2px dashed ${eventDragOver ? '#06b6d4' : '#2a3a5c'}`, borderRadius: 8,
+                    padding: '30px 20px', textAlign: 'center', cursor: 'pointer',
+                    transition: 'border-color 0.2s, background 0.2s',
+                    background: eventDragOver ? 'rgba(6,182,212,0.05)' : 'transparent', marginBottom: 16,
+                  }}>
+                  <Upload size={28} style={{ color: eventDragOver ? '#06b6d4' : '#64748b', marginBottom: 6 }} />
+                  <div style={{ fontSize: 13, color: '#e2e8f0', marginBottom: 4 }}>
+                    {eventFile ? eventFile.name : 'Drop .txt/.md file here or click to browse'}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    Accepts .txt or .md files — event attendee lists with <strong style={{ color: '#94a3b8' }}>**Company Name**</strong> format
+                  </div>
+                </div>
+                <input ref={eventFileInputRef} type="file" accept=".txt,.md" onChange={handleEventFileSelect} style={{ display: 'none' }} />
+
+                {/* Event name override */}
+                <div className="input-group">
+                  <label className="input-label">Event Name (auto-detected, overridable)</label>
+                  <input className="input" value={eventName} onChange={e => setEventName(e.target.value)}
+                    placeholder="e.g. SXSW 2025, NVIDIA GTC 2026" style={{ fontSize: 12 }} />
+                </div>
+
+                {/* Markdown textarea */}
+                <div className="input-group">
+                  <label className="input-label">Paste Event Markdown / Text</label>
+                  {eventFile && (
+                    <div style={{ fontSize: 10, color: '#10b981', marginBottom: 4 }}>
+                      ✅ File loaded: {eventFile.name} ({Math.round(eventMarkdown.length / 1024)} KB)
+                    </div>
+                  )}
+                  <textarea
+                    className="input"
+                    rows={12}
+                    value={eventMarkdown}
+                    onChange={e => setEventMarkdown(e.target.value)}
+                    placeholder={`Example format:\n\n**NVIDIA** *https://nvidia.com* [sponsor]\n- World leader in AI computing and GPUs\n- Sarah Chen (VP of Partnerships)\n- Uses: Salesforce, Slack, Datadog\n\n**CoreWeave** *https://coreweave.com* [speaker]\n- GPU cloud provider for AI workloads\n- Mike Jones (CTO)\n\n**Lambda Labs** [scout]\n- Cloud GPU provider ...`}
+                    style={{ fontSize: 12 }}
+                  />
+                </div>
+
+                {eventError && (
+                  <div style={{ 
+                    padding: '10px 14px', 
+                    background: 'rgba(239,68,68,0.08)', 
+                    border: '1px solid rgba(239,68,68,0.3)', 
+                    borderRadius: 6, 
+                    color: '#fca5a5', 
+                    fontSize: 12, 
+                    marginBottom: 12,
+                    lineHeight: 1.6,
+                    whiteSpace: 'pre-wrap'
+                  }}>
+                    {eventError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary" onClick={handleParseEventMarkdown} disabled={!eventMarkdown.trim() || eventParsing} style={{ flex: 1 }}>
+                    <FileText size={14} />
+                    {eventParsing ? 'Parsing...' : 'Parse & Extract Companies'}
+                  </button>
+                  {eventMarkdown && (
+                    <button className="btn btn-ghost" onClick={handleClearEventMarkdown} style={{ fontSize: 11 }}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {eventStep === 'parsing' && (
+              <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+                <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid #2a3a5c', borderTopColor: '#06b6d4', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px' }} />
+                <div style={{ fontSize: 14, color: '#e2e8f0', marginBottom: 4 }}>Parsing event markdown...</div>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Extracting companies, people, and signals</div>
+              </div>
+            )}
+
+            {eventStep === 'review' && eventCandidates.length > 0 && (
+              <>
+                {/* Summary stats */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0', marginBottom: 12 }}>
+                    <CheckCircle size={16} style={{ color: '#10b981', display: 'inline', marginRight: 6 }} />
+                    {eventCandidates.length} companies extracted from "{eventName || eventFile?.name || 'Pasted text'}"
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+                    <div className="stat-card" style={{ padding: 10 }}><div className="stat-card-label">Total Found</div><div className="stat-card-value" style={{ fontSize: 20, color: '#e2e8f0' }}>{eventCandidates.length}</div></div>
+                    <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(16,185,129,0.3)' }}><div className="stat-card-label">Selected</div><div className="stat-card-value" style={{ fontSize: 20, color: '#10b981' }}>{selectedForImport.size}</div></div>
+                    <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(59,130,246,0.3)' }}><div className="stat-card-label">People Found</div><div className="stat-card-value" style={{ fontSize: 20, color: '#3b82f6' }}>{eventCandidates.reduce((s, c) => s + c.extractedPeople.length, 0)}</div></div>
+                    <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(6,182,212,0.3)' }}><div className="stat-card-label">Duplicates</div><div className="stat-card-value" style={{ fontSize: 20, color: '#f59e0b' }}>{eventCandidates.filter(c => c.matchedExistingCompanyId).length}</div></div>
+                  </div>
+                </div>
+
+                {/* Bulk actions */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary" onClick={handleSelectAllCandidates} style={{ fontSize: 12 }}>Select All</button>
+                  <button className="btn btn-ghost" onClick={handleDeselectAllCandidates} style={{ fontSize: 12 }}>Deselect All</button>
+                  <button className="btn btn-primary" onClick={handleImportSelectedToPipeline} disabled={selectedForImport.size === 0 || eventProcessing}
+                    style={{ fontSize: 12 }}>
+                    {eventProcessing ? 'Importing...' : `Add Selected (${selectedForImport.size}) to Pipeline`}
+                  </button>
+                  <button className="btn btn-secondary" onClick={handleSendToResearchQueue} disabled={selectedForImport.size === 0}
+                    style={{ fontSize: 12 }}>
+                    Send to Research Queue
+                  </button>
+                  <button className="btn btn-ghost" onClick={handleDismissEventImport} style={{ fontSize: 12, color: '#64748b', marginLeft: 'auto' }}>
+                    <X size={12} /> Close Import
+                  </button>
+                </div>
+
+                {/* Candidates grid */}
+                <div style={{ maxHeight: 500, overflow: 'auto', display: 'grid', gap: 8 }}>
+                  {eventCandidates.map(candidate => (
+                    <div key={candidate.id} style={{
+                      padding: 12,
+                      background: candidate.status === 'imported' ? 'rgba(16,185,129,0.04)' :
+                        candidate.status === 'research_queue' ? 'rgba(245,158,11,0.04)' : '#0f1525',
+                      borderRadius: 6,
+                      border: `1px solid ${candidate.matchedExistingCompanyId ? 'rgba(245,158,11,0.3)' : '#2a3a5c'}`,
+                      fontSize: 12,
+                      opacity: candidate.status === 'imported' || candidate.status === 'skipped' ? 0.6 : 1,
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                        {/* Checkbox for selection */}
+                        {(candidate.status === 'pending' || candidate.status === 'research_queue') && (
+                          <input type="checkbox"
+                            checked={selectedForImport.has(candidate.id)}
+                            onChange={() => handleToggleSelectCandidate(candidate.id)}
+                            style={{ marginTop: 2, accentColor: '#06b6d4' }} />
+                        )}
+
+                        <div style={{ flex: 1 }}>
+                          {/* Company name & badges */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                            <input className="input" value={candidate.companyName}
+                              onChange={e => handleUpdateCandidateField(candidate.id, 'companyName', e.target.value)}
+                              style={{ fontSize: 13, fontWeight: 600, padding: '2px 6px', width: 240, border: '1px solid transparent', background: 'transparent', color: '#e2e8f0' }}
+                              title="Click to edit company name" />
+                            <span className={`badge ${candidate.confidence === 'High' ? 'badge-green' : candidate.confidence === 'Medium' ? 'badge-amber' : 'badge-red'}`} style={{ fontSize: 9 }}>{candidate.confidence}</span>
+                            <span className="badge" style={{ fontSize: 9, background: 'rgba(59,130,246,0.12)', color: '#3b82f6' }}>{accountTypeLabels[candidate.suggestedAccountType]}</span>
+                            {candidate.tags.map(tag => (
+                              <span key={tag} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: tag === 'scout' ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.1)', color: tag === 'scout' ? '#f59e0b' : '#3b82f6' }}>
+                                [{tag}]
+                              </span>
+                            ))}
+                            {candidate.matchedExistingCompanyId && (
+                              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(245,158,11,0.12)', color: '#f59e0b' }}>
+                                ⚠️ Already in pipeline
+                              </span>
+                            )}
+                            {candidate.status === 'imported' && <span style={{ fontSize: 9, color: '#10b981' }}>✅ Imported</span>}
+                            {candidate.status === 'research_queue' && <span style={{ fontSize: 9, color: '#f59e0b' }}>📋 Research Queue</span>}
+                          </div>
+
+                          {/* Website */}
+                          <div style={{ marginBottom: 4 }}>
+                            <input className="input" value={candidate.website}
+                              onChange={e => handleUpdateCandidateField(candidate.id, 'website', e.target.value)}
+                              placeholder="Website URL..."
+                              style={{ fontSize: 11, padding: '2px 6px', width: 300, color: '#3b82f6' }} />
+                          </div>
+
+                          {/* Description */}
+                          {candidate.description && (
+                            <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 4 }}>{candidate.description}</div>
+                          )}
+
+                          {/* Extracted people */}
+                          {candidate.extractedPeople.length > 0 && (
+                            <div style={{ marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              {candidate.extractedPeople.map((p, i) => (
+                                <span key={i} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.15)' }}>
+                                  {p.name}{p.role ? ` — ${p.role}` : ''}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Tech stack */}
+                          {candidate.extractedTechStack.length > 0 && (
+                            <div style={{ marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              {candidate.extractedTechStack.map((tech, i) => (
+                                <span key={i} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(59,130,246,0.08)', color: '#3b82f6' }}>{tech}</span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Raw bullets (collapsible) */}
+                          {candidate.rawBullets.length > 0 && (
+                            <details style={{ marginTop: 4 }}>
+                              <summary style={{ fontSize: 10, color: '#64748b', cursor: 'pointer' }}>
+                                {candidate.rawBullets.length} raw bullet{candidate.rawBullets.length !== 1 ? 's' : ''}
+                              </summary>
+                              <div style={{ padding: 4, fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
+                                {candidate.rawBullets.map((b, i) => (
+                                  <div key={i} style={{ paddingLeft: 8, borderLeft: '2px solid #2a3a5c', marginBottom: 2 }}>{b}</div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+
+                          {/* Editable notes */}
+                          <div style={{ marginTop: 4 }}>
+                            <textarea className="input" value={candidate.editableNotes}
+                              onChange={e => handleUpdateCandidateField(candidate.id, 'editableNotes', e.target.value)}
+                              placeholder="Add notes..."
+                              rows={1}
+                              style={{ fontSize: 10, padding: '3px 6px', resize: 'vertical' }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ══════════════ PIPELINE MODE ══════════════ */}
-      {!importMode && (
+      {!importMode && !eventImportMode && (
         <>
           {/* Filters */}
           <div className="card mb-4">
-            <div className="card-body" style={{ padding: '12px 16px' }}>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="card-body" style={{ padding: '8px 12px' }}>
+              {/* Tab toggle */}
+              <div style={{ display: 'flex', gap: 4, marginBottom: showResearchQueue ? 0 : 8 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setShowResearchQueue(false); setSelectedAccountId(null); }}
+                  style={{
+                    fontSize: 12, fontWeight: 600,
+                    color: !showResearchQueue ? '#06b6d4' : '#64748b',
+                    borderBottom: !showResearchQueue ? '2px solid #06b6d4' : '2px solid transparent',
+                    borderRadius: 0, padding: '4px 0',
+                  }}>
+                  <Radar size={13} style={{ marginRight: 4 }} /> Pipeline ({companies.length})
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={handleToggleResearchQueueTab}
+                  style={{
+                    fontSize: 12, fontWeight: 600,
+                    color: showResearchQueue ? '#f59e0b' : '#64748b',
+                    borderBottom: showResearchQueue ? '2px solid #f59e0b' : '2px solid transparent',
+                    borderRadius: 0, padding: '4px 0', marginLeft: 16,
+                  }}>
+                  <BookmarkCheck size={13} style={{ marginRight: 4 }} /> Research Queue ({researchQueueCandidates.length})
+                </button>
+              </div>
+              {!showResearchQueue && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, color: '#64748b', fontWeight: 600 }}>Filters:</span>
                 <select className="input" style={{ fontSize: 12, width: 130 }} value={filterType} onChange={e => setFilterType(e.target.value as AccountType | 'all')}>
                   <option value="all">All Types ({counts.all})</option>
@@ -727,9 +1414,188 @@ export default function PipelineScoutPage() {
                 <span style={{ fontSize: 11, color: '#64748b', marginLeft: 'auto' }}>
                   {filtered.length} account{filtered.length !== 1 ? 's' : ''}
                 </span>
-              </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Research Queue View */}
+          {showResearchQueue && (
+            <div className="card mb-4" style={{ borderColor: '#f59e0b' }}>
+              <div className="card-header">
+                <span className="input-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <BookmarkCheck size={16} style={{ color: '#f59e0b' }} />
+                  Research Queue
+                </span>
+                <span style={{ fontSize: 11, color: '#64748b' }}>
+                  {researchQueueCandidates.length} candidate{researchQueueCandidates.length !== 1 ? 's' : ''} saved for later
+                </span>
+              </div>
+              <div className="card-body">
+                {researchQueueCandidates.length === 0 ? (
+                  <EmptyState>
+                    <EmptyStateIcon icon="&#128203;" />
+                    <EmptyStateTitle>Research Queue is empty</EmptyStateTitle>
+                    <EmptyStateDesc>
+                      When you parse an event attendee list, use &ldquo;Send to Research Queue&rdquo; to save candidates for later review.
+                    </EmptyStateDesc>
+                  </EmptyState>
+                ) : (
+                  <>
+                    {/* Summary stats */}
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
+                        <div className="stat-card" style={{ padding: 10 }}><div className="stat-card-label">Total</div><div className="stat-card-value" style={{ fontSize: 20, color: '#e2e8f0' }}>{researchQueueCandidates.length}</div></div>
+                        <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(16,185,129,0.3)' }}>
+                          <div className="stat-card-label">Selected</div>
+                          <div className="stat-card-value" style={{ fontSize: 20, color: '#10b981' }}>{researchQueueSelectedIds.size}</div>
+                        </div>
+                        <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(245,158,11,0.3)' }}>
+                          <div className="stat-card-label">Pending</div>
+                          <div className="stat-card-value" style={{ fontSize: 20, color: '#f59e0b' }}>{researchQueueCandidates.filter(c => c.status === 'research_queue' || c.status === 'pending_research').length}</div>
+                        </div>
+                        <div className="stat-card" style={{ padding: 10, borderColor: 'rgba(16,185,129,0.3)' }}>
+                          <div className="stat-card-label">Imported</div>
+                          <div className="stat-card-value" style={{ fontSize: 20, color: '#10b981' }}>{researchQueueCandidates.filter(c => c.status === 'imported').length}</div>
+                        </div>
+                        <div className="stat-card" style={{ padding: 10 }}>
+                          <div className="stat-card-label">People</div>
+                          <div className="stat-card-value" style={{ fontSize: 20, color: '#3b82f6' }}>{researchQueueCandidates.reduce((s, c) => s + c.extractedPeople.length, 0)}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bulk actions */}
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                      <button className="btn btn-primary" onClick={handleSelectAllRQ} style={{ fontSize: 12 }}>Select All</button>
+                      <button className="btn btn-ghost" onClick={handleDeselectAllRQ} style={{ fontSize: 12 }}>Deselect All</button>
+                      <button className="btn btn-primary" onClick={handleImportSelectedRQToPipeline}
+                        disabled={researchQueueSelectedIds.size === 0 || researchQueueProcessing}
+                        style={{ fontSize: 12 }}>
+                        {researchQueueProcessing ? 'Importing...' : `Add Selected (${researchQueueSelectedIds.size}) to Pipeline`}
+                      </button>
+                      <button className="btn btn-ghost" onClick={handleRemoveSelectedRQ}
+                        disabled={researchQueueSelectedIds.size === 0}
+                        style={{ fontSize: 12, color: '#ef4444' }}>
+                        <X size={12} /> Remove Selected
+                      </button>
+                    </div>
+
+                    {/* Candidates grid */}
+                    <div style={{ maxHeight: 500, overflow: 'auto', display: 'grid', gap: 8 }}>
+                      {researchQueueCandidates.map(candidate => (
+                        <div key={candidate.id} style={{
+                          padding: 12,
+                          background: candidate.status === 'imported' ? 'rgba(16,185,129,0.04)' :
+                            candidate.status === 'skipped' ? 'rgba(100,116,139,0.04)' : '#0f1525',
+                          borderRadius: 6,
+                          border: `1px solid ${candidate.matchedExistingCompanyId ? 'rgba(245,158,11,0.3)' : '#2a3a5c'}`,
+                          fontSize: 12,
+                          opacity: candidate.status === 'imported' || candidate.status === 'skipped' ? 0.6 : 1,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                            {/* Checkbox for selection */}
+                            {(candidate.status === 'research_queue' || candidate.status === 'pending_research') && (
+                              <input type="checkbox"
+                                checked={researchQueueSelectedIds.has(candidate.id)}
+                                onChange={() => handleToggleRQSelectCandidate(candidate.id)}
+                                style={{ marginTop: 2, accentColor: '#f59e0b' }} />
+                            )}
+
+                            <div style={{ flex: 1 }}>
+                              {/* Company name & badges */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                                <input className="input" value={candidate.companyName}
+                                  onChange={e => handleUpdateRQField(candidate.id, 'companyName', e.target.value)}
+                                  style={{ fontSize: 13, fontWeight: 600, padding: '2px 6px', width: 240, border: '1px solid transparent', background: 'transparent', color: '#e2e8f0' }}
+                                  title="Click to edit company name" />
+                                <span className={`badge ${candidate.confidence === 'High' ? 'badge-green' : candidate.confidence === 'Medium' ? 'badge-amber' : 'badge-red'}`} style={{ fontSize: 9 }}>{candidate.confidence}</span>
+                                <span className="badge" style={{ fontSize: 9, background: 'rgba(59,130,246,0.12)', color: '#3b82f6' }}>{accountTypeLabels[candidate.suggestedAccountType]}</span>
+                                {candidate.eventName && (
+                                  <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(6,182,212,0.1)', color: '#06b6d4' }}>{candidate.eventName}</span>
+                                )}
+                                {candidate.status === 'imported' && <span style={{ fontSize: 9, color: '#10b981' }}>✅ Imported</span>}
+                                {candidate.status === 'skipped' && <span style={{ fontSize: 9, color: '#64748b' }}>⏭ Skipped</span>}
+                                {candidate.savedAt && (
+                                  <span style={{ fontSize: 8, color: '#4a5568' }}>Saved {new Date(candidate.savedAt).toLocaleDateString()}</span>
+                                )}
+                              </div>
+
+                              {/* Website */}
+                              <div style={{ marginBottom: 4 }}>
+                                <input className="input" value={candidate.website}
+                                  onChange={e => handleUpdateRQField(candidate.id, 'website', e.target.value)}
+                                  placeholder="Website URL..."
+                                  style={{ fontSize: 11, padding: '2px 6px', width: 300, color: '#3b82f6' }} />
+                              </div>
+
+                              {/* Description */}
+                              {candidate.description && (
+                                <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 4 }}>{candidate.description}</div>
+                              )}
+
+                              {/* Extracted people */}
+                              {candidate.extractedPeople.length > 0 && (
+                                <div style={{ marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  {candidate.extractedPeople.map((p, i) => (
+                                    <span key={i} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: 'rgba(16,185,129,0.08)', color: '#10b981', border: '1px solid rgba(16,185,129,0.15)' }}>
+                                      {p.name}{p.role ? ` — ${p.role}` : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Tech stack */}
+                              {candidate.extractedTechStack.length > 0 && (
+                                <div style={{ marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  {candidate.extractedTechStack.map((tech, i) => (
+                                    <span key={i} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: 'rgba(59,130,246,0.08)', color: '#3b82f6' }}>{tech}</span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Raw bullets (collapsible) */}
+                              {candidate.rawBullets.length > 0 && (
+                                <details style={{ marginTop: 4 }}>
+                                  <summary style={{ fontSize: 10, color: '#64748b', cursor: 'pointer' }}>
+                                    {candidate.rawBullets.length} raw bullet{candidate.rawBullets.length !== 1 ? 's' : ''}
+                                  </summary>
+                                  <div style={{ padding: 4, fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
+                                    {candidate.rawBullets.map((b, i) => (
+                                      <div key={i} style={{ paddingLeft: 8, borderLeft: '2px solid #2a3a5c', marginBottom: 2 }}>{b}</div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+
+                              {/* Editable notes */}
+                              <div style={{ marginTop: 4 }}>
+                                <textarea className="input" value={candidate.editableNotes}
+                                  onChange={e => handleUpdateRQField(candidate.id, 'editableNotes', e.target.value)}
+                                  placeholder="Add notes..."
+                                  rows={1}
+                                  style={{ fontSize: 10, padding: '3px 6px', resize: 'vertical' }} />
+                              </div>
+
+                              {/* Per-candidate actions */}
+                              {(candidate.status === 'research_queue' || candidate.status === 'pending_research') && (
+                                <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
+                                  <button className="btn btn-ghost btn-sm" onClick={() => handleMarkAsActionRQ(candidate.id, 'imported')}
+                                    style={{ fontSize: 10, color: '#10b981' }}>Mark Imported</button>
+                                  <button className="btn btn-ghost btn-sm" onClick={() => handleMarkAsActionRQ(candidate.id, 'skipped')}
+                                    style={{ fontSize: 10, color: '#64748b' }}>Skip</button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Add Account Form */}
           {showAddForm && (

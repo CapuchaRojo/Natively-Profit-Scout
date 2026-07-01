@@ -1,22 +1,16 @@
 // ============================================================
-// Recon API Client — Edge Function Proxy Layer
+// Recon API Client — v2.0 (Power-Up)
+// Edge Function Proxy Layer with smart retry, concurrency
+// limiting, circuit breaker, and structured logging.
 //
-// Three-tier fetch chain (used by reconScanner.ts):
-//   1. fetch-public-url Edge Function  → server-side HTTP fetch
-//   2. Browser fetch                   → fast path for CORS-friendly sites
-//   3. NinjaPear proxy                 → last resort, rate-limited
-//
-// NinjaPear Edge Function v3 actions (ninjapear-proxy):
-//   fetch_page            — NinjaPear scrape (any URL) [needs API key]
-//   scan_team_pages       — parallel NinjaPear scrape [needs API key]
-//   search_web            — DuckDuckGo HTML search (public, no key needed)
-//   fetch_linkedin_jobs   — safe LinkedIn research links (public)
-//   fetch_linkedin_company — safe LinkedIn research URLs (public)
-//   enrich_company        — NinjaPear company details [needs API key]
-//   enrich_person         — NinjaPear person profile [needs API key]
-//   full_recon            — orchestrated multi-step recon
+// Phase 2a power-up:
+//   - All calls go through smartEdgeCall (retry + backoff + circuit breaker)
+//   - Concurrency-limited via withConcurrencyLimit (max 5 concurrent)
+//   - Timeout protection on every call
+//   - Health analytics: getCallAnalytics(), getCircuitStatus()
 // ============================================================
-import { invokeEdgeFunction, NINJAPEAR_PROXY_FUNCTION, FETCH_PUBLIC_URL_FUNCTION } from '../constants/config';
+import { smartEdgeCall, withConcurrencyLimit, getCallAnalytics, getPendingCount, getCircuitStatus } from './edgeRequestManager';
+import { NINJAPEAR_PROXY_FUNCTION, FETCH_PUBLIC_URL_FUNCTION } from '../constants/config';
 
 // ── Shared response types ─────────────────────────────────────
 
@@ -97,16 +91,24 @@ export interface FullReconResponse {
   linkedInUrls?: LinkedInUrl[];
 }
 
+// ── Health / Analytics exports ────────────────────────────────
+export { getCallAnalytics, getPendingCount, getCircuitStatus };
+
+// ── Internal wrapper: smart + concurrency-limited call ────────
+
+async function callEdge<R = unknown>(
+  functionName: string,
+  body: Record<string, unknown>,
+  options?: { important?: boolean; timeoutMs?: number; retries?: number }
+): Promise<{ data: R | null; error: string | null }> {
+  return withConcurrencyLimit(
+    () => smartEdgeCall<R>(functionName, body, options).then(r => ({ data: r.data, error: r.error })),
+    { concurrency: 5, key: 'edge-call' }
+  );
+}
+
 // ── fetch-public-url (simple server-side fetch) ─────────
 
-/**
- * Fetch any public URL via the standalone Edge Function proxy.
- * This is a simple server-side HTTP fetch — no NinjaPear dependency,
- * no CORS restrictions. It returns raw HTML and cleaned text.
- *
- * Use this as the FIRST attempt in the fetch chain, before falling
- * back to NinjaPear or user paste.
- */
 export async function fetchPageViaEdgeFunction(url: string): Promise<{
   success: boolean;
   html?: string;
@@ -114,64 +116,35 @@ export async function fetchPageViaEdgeFunction(url: string): Promise<{
   error?: string;
   blocked?: boolean;
 }> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      html?: string;
-      text?: string;
-      error?: string;
-      blocked?: boolean;
-      statusCode?: number;
-    }>(FETCH_PUBLIC_URL_FUNCTION, { url });
+  const { data, error } = await callEdge<{
+    success: boolean; html?: string; text?: string; error?: string;
+    blocked?: boolean; statusCode?: number;
+  }>(FETCH_PUBLIC_URL_FUNCTION, { url }, { timeoutMs: 20000, important: true });
 
-    if (error || !data) {
-      console.warn('[ReconApiClient] fetchPageViaEdgeFunction error:', error);
-      return { success: false, error: error || 'No response from edge function', blocked: false };
-    }
-
-    return {
-      success: data.success,
-      html: data.html,
-      text: data.text,
-      error: data.error,
-      blocked: data.blocked || false,
-    };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] fetchPageViaEdgeFunction exception:', error.message);
-    return { success: false, error: error.message, blocked: false };
+  if (error || !data) {
+    console.warn('[ReconApiClient] fetchPageViaEdgeFunction error:', error);
+    return { success: false, error: error || 'No response from edge function', blocked: false };
   }
+  return {
+    success: data.success, html: data.html, text: data.text,
+    error: data.error, blocked: data.blocked || false,
+  };
 }
 
 // ── fetch_page (NinjaPear scrape — needs API key) ─────────
 
 export async function scanUrlViaBackend(url: string): Promise<BackendScanResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      html?: string;
-      text?: string;
-      error?: string;
-    }>(NINJAPEAR_PROXY_FUNCTION, {
-      url,
-      action: 'fetch_page',
-    });
+  const { data, error } = await callEdge<{
+    success: boolean; html?: string; text?: string; error?: string;
+  }>(NINJAPEAR_PROXY_FUNCTION, { url, action: 'fetch_page' }, { important: true, timeoutMs: 25000 });
 
-    if (error || !data) {
-      console.warn('[ReconApiClient] Backend proxy error:', error);
-      return { success: false, message: error || 'Backend proxy returned no data.' };
-    }
-
-    if (!data.success || !data.html) {
-      return { success: false, message: data.error || 'Backend proxy could not fetch the page.' };
-    }
-
-    return { success: true, message: 'Page fetched via NinjaPear proxy.', data: data.html };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] Exception:', error.message);
-    return { success: false, message: error.message || 'Unknown error calling backend proxy.' };
+  if (error || !data) {
+    return { success: false, message: error || 'Backend proxy returned no data.' };
   }
+  if (!data.success || !data.html) {
+    return { success: false, message: data.error || 'Backend proxy could not fetch the page.' };
+  }
+  return { success: true, message: 'Page fetched via NinjaPear proxy.', data: data.html };
 }
 
 export async function scanDomainViaBackend(domain: string): Promise<BackendScanResponse> {
@@ -182,25 +155,14 @@ export async function scanDomainViaBackend(domain: string): Promise<BackendScanR
 // ── scan_team_pages ──────────────────────────────────────
 
 export async function scanTeamPagesViaBackend(urls: string[]): Promise<TeamPagesResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      pages: TeamPageResult[];
-    }>(NINJAPEAR_PROXY_FUNCTION, {
-      action: 'scan_team_pages',
-      urls,
-    });
+  const { data, error } = await callEdge<{
+    success: boolean; pages: TeamPageResult[];
+  }>(NINJAPEAR_PROXY_FUNCTION, { action: 'scan_team_pages', urls }, { important: true, timeoutMs: 30000 });
 
-    if (error || !data) {
-      return { success: false, pages: [], message: error || 'No data returned.' };
-    }
-
-    return { ...data, message: `Scanned ${data.pages?.length || 0} pages.` };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] scanTeamPagesViaBackend exception:', error.message);
-    return { success: false, pages: [], message: error.message };
+  if (error || !data) {
+    return { success: false, pages: [], message: error || 'No data returned.' };
   }
+  return { ...data, message: `Scanned ${data.pages?.length || 0} pages.` };
 }
 
 // ── search_web (DuckDuckGo, public — no API key needed) ──
@@ -209,109 +171,63 @@ export async function searchWebViaBackend(
   query: string,
   maxResults = 10
 ): Promise<WebSearchResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      results?: WebSearchResult[];
-      error?: string;
-    }>(NINJAPEAR_PROXY_FUNCTION, {
-      action: 'search_web',
-      query,
-      maxResults,
-    });
+  const { data, error } = await callEdge<{
+    success: boolean; results?: WebSearchResult[]; error?: string;
+  }>(NINJAPEAR_PROXY_FUNCTION, { action: 'search_web', query, maxResults }, { timeoutMs: 15000 });
 
-    if (error || !data) {
-      return { success: false, results: [], message: error || 'No data returned.' };
-    }
-
-    return {
-      success: data.success,
-      results: data.results || [],
-      message: data.success
-        ? `Found ${data.results?.length || 0} results for "${query}".`
-        : data.error || 'Search failed.',
-    };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] searchWebViaBackend exception:', error.message);
-    return { success: false, results: [], message: error.message };
+  if (error || !data) {
+    return { success: false, results: [], message: error || 'No data returned.' };
   }
+  return {
+    success: data.success,
+    results: data.results || [],
+    message: data.success
+      ? `Found ${data.results?.length || 0} results for "${query}".`
+      : data.error || 'Search failed.',
+  };
 }
 
 // ── fetch_linkedin_jobs (SAFE — research links, no scraping) ──
 
-/**
- * Generate safe LinkedIn research links via Edge Function.
- * Returns URLs the user opens manually — NO scraping of LinkedIn.
- */
 export async function fetchLinkedInJobsViaBackend(
   keywords: string,
   location = ''
 ): Promise<LinkedInUrlsResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      linkedInUrls?: LinkedInUrl[];
-      error?: string;
-    }>(NINJAPEAR_PROXY_FUNCTION, {
-      action: 'fetch_linkedin_jobs',
-      keywords,
-      location,
-    });
+  const { data, error } = await callEdge<{
+    success: boolean; linkedInUrls?: LinkedInUrl[]; error?: string;
+  }>(NINJAPEAR_PROXY_FUNCTION, { action: 'fetch_linkedin_jobs', keywords, location }, { timeoutMs: 10000 });
 
-    if (error || !data) {
-      return { success: false, message: error || 'No data returned.' };
-    }
-
-    return {
-      success: data.success,
-      linkedInUrls: data.linkedInUrls || [],
-      message: data.success
-        ? `Generated ${data.linkedInUrls?.length || 0} LinkedIn research links.`
-        : data.error || 'LinkedIn link generation failed.',
-    };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] fetchLinkedInJobsViaBackend exception:', error.message);
-    return { success: false, message: error.message };
+  if (error || !data) {
+    return { success: false, message: error || 'No data returned.' };
   }
+  return {
+    success: data.success,
+    linkedInUrls: data.linkedInUrls || [],
+    message: data.success
+      ? `Generated ${data.linkedInUrls?.length || 0} LinkedIn research links.`
+      : data.error || 'LinkedIn link generation failed.',
+  };
 }
 
 // ── fetch_linkedin_company (SAFE — research URLs, no scraping) ──
 
-/**
- * Generate safe LinkedIn company research URLs via Edge Function.
- * Returns URLs the user opens manually — NO scraping of LinkedIn.
- */
 export async function fetchLinkedInCompanyViaBackend(
   companyName: string
 ): Promise<LinkedInUrlsResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<{
-      success: boolean;
-      linkedInUrls?: LinkedInUrl[];
-      error?: string;
-    }>(NINJAPEAR_PROXY_FUNCTION, {
-      action: 'fetch_linkedin_company',
-      companyName,
-    });
+  const { data, error } = await callEdge<{
+    success: boolean; linkedInUrls?: LinkedInUrl[]; error?: string;
+  }>(NINJAPEAR_PROXY_FUNCTION, { action: 'fetch_linkedin_company', companyName }, { timeoutMs: 10000 });
 
-    if (error || !data) {
-      return { success: false, message: error || 'No data returned.' };
-    }
-
-    return {
-      success: data.success,
-      linkedInUrls: data.linkedInUrls || [],
-      message: data.success
-        ? `Generated ${data.linkedInUrls?.length || 0} LinkedIn research URLs.`
-        : data.error || 'LinkedIn link generation failed.',
-    };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] fetchLinkedInCompanyViaBackend exception:', error.message);
-    return { success: false, message: error.message };
+  if (error || !data) {
+    return { success: false, message: error || 'No data returned.' };
   }
+  return {
+    success: data.success,
+    linkedInUrls: data.linkedInUrls || [],
+    message: data.success
+      ? `Generated ${data.linkedInUrls?.length || 0} LinkedIn research URLs.`
+      : data.error || 'LinkedIn link generation failed.',
+  };
 }
 
 // ── enrich_company (NinjaPear — needs API key) ────────────
@@ -320,22 +236,16 @@ export async function enrichCompanyViaBackend(
   domain: string,
   enrichActions: string[] = ['details', 'employees', 'funding', 'updates']
 ): Promise<EnrichCompanyResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<EnrichCompanyResponse>(
-      NINJAPEAR_PROXY_FUNCTION,
-      { action: 'enrich_company', domain, enrichActions }
-    );
+  const { data, error } = await callEdge<EnrichCompanyResponse>(
+    NINJAPEAR_PROXY_FUNCTION,
+    { action: 'enrich_company', domain, enrichActions },
+    { important: true, timeoutMs: 30000 }
+  );
 
-    if (error || !data) {
-      return { success: false, message: error || 'No data returned.' };
-    }
-
-    return { ...data, message: data.success ? 'Company enriched via NinjaPear.' : 'Enrichment failed.' };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] enrichCompanyViaBackend exception:', error.message);
-    return { success: false, message: error.message };
+  if (error || !data) {
+    return { success: false, message: error || 'No data returned.' };
   }
+  return { ...data, message: data.success ? 'Company enriched via NinjaPear.' : 'Enrichment failed.' };
 }
 
 // ── enrich_person (NinjaPear — needs API key) ─────────────
@@ -343,25 +253,19 @@ export async function enrichCompanyViaBackend(
 export async function enrichPersonViaBackend(
   linkedinUrl: string
 ): Promise<EnrichPersonResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<EnrichPersonResponse>(
-      NINJAPEAR_PROXY_FUNCTION,
-      { action: 'enrich_person', linkedinUrl }
-    );
+  const { data, error } = await callEdge<EnrichPersonResponse>(
+    NINJAPEAR_PROXY_FUNCTION,
+    { action: 'enrich_person', linkedinUrl },
+    { important: true, timeoutMs: 20000 }
+  );
 
-    if (error || !data) {
-      return { success: false, message: error || 'No data returned.' };
-    }
-
-    return { ...data, message: data.success ? 'Person enriched via NinjaPear.' : 'Enrichment failed.' };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] enrichPersonViaBackend exception:', error.message);
-    return { success: false, message: error.message };
+  if (error || !data) {
+    return { success: false, message: error || 'No data returned.' };
   }
+  return { ...data, message: data.success ? 'Person enriched via NinjaPear.' : 'Enrichment failed.' };
 }
 
-// ── full_recon (orchestrated — public + NinjaPear where available) ──
+// ── full_recon (orchestrated — public + NinjaPear) ────────
 
 export async function fullReconViaBackend(params: {
   url?: string;
@@ -374,20 +278,14 @@ export async function fullReconViaBackend(params: {
   maxResults?: number;
   enrichActions?: string[];
 }): Promise<FullReconResponse> {
-  try {
-    const { data, error } = await invokeEdgeFunction<FullReconResponse>(
-      NINJAPEAR_PROXY_FUNCTION,
-      { action: 'full_recon', ...params }
-    );
+  const { data, error } = await callEdge<FullReconResponse>(
+    NINJAPEAR_PROXY_FUNCTION,
+    { action: 'full_recon', ...params },
+    { important: true, timeoutMs: 60000 }
+  );
 
-    if (error || !data) {
-      return { success: false, message: error || 'No data returned.', reconSummary: 'Recon failed.' };
-    }
-
-    return { ...data, message: data.success ? 'Full recon completed.' : 'Recon failed.' };
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error('[ReconApiClient] fullReconViaBackend exception:', error.message);
-    return { success: false, message: error.message, reconSummary: 'Recon failed.' };
+  if (error || !data) {
+    return { success: false, message: error || 'No data returned.', reconSummary: 'Recon failed.' };
   }
+  return { ...data, message: data.success ? 'Full recon completed.' : 'Recon failed.' };
 }

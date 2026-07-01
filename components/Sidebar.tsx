@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   LayoutDashboard,
   Target,
+  Factory,
   Plus,
   Globe,
   Download,
@@ -24,15 +25,14 @@ interface NavItem {
   label: string;
   icon: ReactNode;
 }
-
 const navItems: NavItem[] = [
   { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
   { path: '/pipeline', label: 'Pipeline Scout', icon: <Target size={18} /> },
   { path: '/new-analysis', label: 'New Analysis', icon: <Plus size={18} /> },
+  { path: '/ai-factory', label: 'AI Factory Channel Sales', icon: <Factory size={18} /> },
   { path: '/public-intel', label: 'Public Intel', icon: <Globe size={18} /> },
   { path: '/crm-export', label: 'CRM Export', icon: <Download size={18} /> },
 ];
-
 const companyNavItems: NavItem[] = [
   { path: '/company', label: 'Company Profile', icon: <Building2 size={18} /> },
   { path: '/auto-fill-recon', label: 'Auto-Fill Recon', icon: <Search size={18} /> },
@@ -101,6 +101,7 @@ export function Sidebar() {
     if (path === '/') return location.pathname === '/';
     if (path === '/pipeline') return location.pathname === '/pipeline';
     if (path === '/new-analysis') return location.pathname === '/new-analysis';
+    if (path === '/ai-factory') return location.pathname === '/ai-factory';
     if (path === '/public-intel') return location.pathname === '/public-intel';
     if (path === '/crm-export') return location.pathname === '/crm-export';
     if (path === '/settings') return location.pathname === '/settings';

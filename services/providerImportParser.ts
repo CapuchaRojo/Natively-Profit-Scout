@@ -150,8 +150,12 @@ export async function parseWorkbookFile(file: File): Promise<ParsedRow[]> {
     || workbook.SheetNames.find((n) => n.toLowerCase() === 'providers');
 
   if (!sheetName) {
+    const sheetList = workbook.SheetNames.map(s => `"${s}"`).join(', ');
+    const hint = workbook.SheetNames.length === 1 && workbook.SheetNames[0] !== 'Providers'
+      ? `\n\nTo fix: Rename the sheet "${workbook.SheetNames[0]}" to "Providers" (capital P) in your spreadsheet app, then upload again.`
+      : `\n\nTo fix: Rename one of your sheets to "Providers" (capital P) in your spreadsheet app, then upload again.`;
     throw new Error(
-      `Sheet "Providers" not found. Available sheets: ${workbook.SheetNames.join(', ')}`
+      `Sheet "Providers" not found.\n\nYour workbook contains these sheets: ${sheetList}${hint}\n\nExpected format: Column A = Company Name, data starts at row 6 (row 5 is the header row).`
     );
   }
 

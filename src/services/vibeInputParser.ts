@@ -211,6 +211,151 @@ function extractBulletList(text: string): string[] {
 }
 
 // ============================================================
+// Smart inference: extract structured fields from narrative text
+// ============================================================
+
+function inferIndustry(text: string, lowerText: string): string {
+  const patterns: { regex: RegExp; industry: string }[] = [
+    { regex: /digital\s+consultanc(?:y|ies)/i, industry: 'Digital Consultancy' },
+    { regex: /AI[-\s]?(?:focused|native|powered|driven)/i, industry: 'AI & Technology' },
+    { regex: /artificial\s+intelligence/i, industry: 'AI & Technology' },
+    { regex: /software\s+(?:development|delivery)/i, industry: 'Software Development' },
+    { regex: /consult(?:ing|ancy)\s+(?:firm|group|company|brand)/i, industry: 'Consulting' },
+    { regex: /SaaS/i, industry: 'SaaS' },
+    { regex: /fintech|financial\s+technology/i, industry: 'Fintech' },
+    { regex: /healthcare|health\s+tech/i, industry: 'Healthcare' },
+    { regex: /manufacturing/i, industry: 'Manufacturing' },
+    { regex: /e[-\s]?commerce/i, industry: 'E-commerce' },
+    { regex: /cyber\s*security/i, industry: 'Cybersecurity' },
+    { regex: /marketing|advertising/i, industry: 'Marketing & Advertising' },
+    { regex: /education|ed[-\s]?tech/i, industry: 'Education' },
+    { regex: /real\s+estate|proptech/i, industry: 'Real Estate' },
+    { regex: /logistics|supply\s+chain/i, industry: 'Logistics & Supply Chain' },
+  ];
+
+  for (const { regex, industry } of patterns) {
+    if (regex.test(text)) return industry;
+  }
+
+  // Check for agency/consulting/service-firm patterns
+  if (/agency|studio|firm|group/i.test(lowerText) && /digital|creative|design|strategy|technology/i.test(lowerText)) {
+    return 'Digital Consultancy';
+  }
+
+  return '';
+}
+
+function inferLocation(text: string): string {
+  const patterns: { regex: RegExp; location: string }[] = [
+    { regex: /\bItaly\b/i, location: 'Italy' },
+    { regex: /\bItalian\b/i, location: 'Italy' },
+    { regex: /\bMilan\b/i, location: 'Milan, Italy' },
+    { regex: /\bRome\b/i, location: 'Rome, Italy' },
+    { regex: /\bTurin\b/i, location: 'Turin, Italy' },
+    { regex: /\bSan Francisco\b/i, location: 'San Francisco, CA' },
+    { regex: /\bNew York\b/i, location: 'New York, NY' },
+    { regex: /\bLondon\b/i, location: 'London, UK' },
+    { regex: /\bBerlin\b/i, location: 'Berlin, Germany' },
+    { regex: /\bParis\b/i, location: 'Paris, France' },
+    { regex: /\bAmsterdam\b/i, location: 'Amsterdam, Netherlands' },
+    { regex: /\bSingapore\b/i, location: 'Singapore' },
+    { regex: /\bSydney\b/i, location: 'Sydney, Australia' },
+    { regex: /\bToronto\b/i, location: 'Toronto, Canada' },
+  ];
+
+  for (const { regex, location } of patterns) {
+    if (regex.test(text)) return location;
+  }
+
+  return '';
+}
+
+function inferRevenue(text: string): string {
+  // Match patterns like "€8M revenue", "$5-10M ARR", "more than €8M revenue"
+  const revenueMatch = text.match(/(?:€|EUR|USD|\$)\s*([\d,.]+[KMB]?)\s*(?:revenue|ARR|MRR)/i);
+  if (revenueMatch) {
+    return `${revenueMatch[0].trim().replace(/\s+/g, ' ')}`;
+  }
+  // Match "€8M" or "$5M" standalone near "revenue"
+  const moneyMatch = text.match(/(?:more\s+than\s+)?(?:€|EUR|USD|\$)\s*([\d,.]+[KMB])\s/i);
+  if (moneyMatch) return moneyMatch[0].trim();
+  return '';
+}
+
+function inferProductsServices(text: string): string {
+  const phrases: string[] = [];
+
+  // Look for descriptive paragraphs about what they do
+  const servicesPatterns = [
+    { regex: /focus(?:es)?\s+(?:appears\s+to\s+)?include\s+(.+?)(?:\.|$)/i, extract: true },
+    { regex: /position(?:s|ing|ed)\s+(?:as|around)\s+(.+?)(?:\.|$)/i, extract: true },
+    { regex: /speciali[sz](?:es|ing)\s+in\s+(.+?)(?:\.|$)/i, extract: true },
+  ];
+
+  for (const { regex, extract } of servicesPatterns) {
+    const match = text.match(regex);
+    if (match && extract && match[1]) {
+      phrases.push(match[1].trim());
+    }
+  }
+
+  // If nothing explicit, look for capability keywords
+  if (phrases.length === 0) {
+    const capabilities: string[] = [];
+    const capMap: Record<string, string> = {
+      'strategy': 'Strategy Consulting',
+      'UI/UX': 'UI/UX Design',
+      'technology': 'Technology Services',
+      'AI': 'AI Solutions',
+      'creativity': 'Creative Services',
+      'performance': 'Performance Marketing',
+      'KPI': 'KPI & Analytics',
+      'brand': 'Brand Strategy',
+      'growth': 'Growth Marketing',
+      'digital transformation': 'Digital Transformation',
+      'lead generation': 'Lead Generation',
+      'digital ecosystems': 'Digital Ecosystems',
+      'software': 'Software Development',
+      'platforms': 'Platform Development',
+      'data': 'Data & Analytics',
+      '3D': '3D & Immersive',
+      'automation': 'Intelligent Automation',
+      'voice': 'Voice Solutions',
+    };
+    for (const [keyword, label] of Object.entries(capMap)) {
+      if (text.toLowerCase().includes(keyword.toLowerCase())) {
+        capabilities.push(label);
+      }
+    }
+    if (capabilities.length > 0) {
+      return capabilities.slice(0, 8).join(', ');
+    }
+  }
+
+  return phrases.join('; ');
+}
+
+function inferSalesModel(text: string): string {
+  const lowerText = text.toLowerCase();
+  const signals: string[] = [];
+
+  if (/enterprise|B2B|b2b|business[-\s]to[-\s]business/i.test(text)) signals.push('B2B Enterprise');
+  if (/SMB|small\s+business|mid[-\s]market/i.test(text)) signals.push('SMB/Mid-Market');
+  if (/partner[-\s]?led|channel|reseller/i.test(text)) signals.push('Partner/Channel');
+  if (/inbound|content\s+marketing|SEO/i.test(text)) signals.push('Inbound');
+  if (/outbound|sales\s+team|SDR/i.test(text)) signals.push('Outbound');
+  if (/product[-\s]led|PLG|self[-\s]serve/i.test(text)) signals.push('Product-Led');
+  if (/consult(?:ing|ative)\s+sales|advisory/i.test(text)) signals.push('Consultative');
+  if (/hackathons?|community|developer[-\s]?led/i.test(text)) signals.push('Community/Developer-Led');
+
+  if (signals.length === 0 && /consultancy|agency|consulting|delivery/i.test(text)) {
+    signals.push('Consultative / Relationship-Based');
+  }
+
+  return signals.length > 0 ? signals.join(', ') : '';
+}
+
+// ============================================================
 // Main parser
 // ============================================================
 
@@ -290,23 +435,61 @@ export function parseVibeInput(rawText: string): VibeParsedCompany {
   addField('linkedInStatus', 'Company', linkedInStatus, 'Key-value', linkedInStatus ? 'high' : 'low');
 
   // ── Industry ──────────────────────────────────────────────
-  const industry = kvPairs.get('industry') || '';
-  addField('basic.industry', 'Company', industry, 'Key-value', industry ? 'medium' : 'low');
+  let industry = kvPairs.get('industry') || '';
+  if (!industry) {
+    industry = inferIndustry(text, lowerText);
+    if (industry) addField('basic.industry', 'Company', industry, 'Inferred from context', 'medium');
+  } else {
+    addField('basic.industry', 'Company', industry, 'Key-value', 'medium');
+  }
 
   // ── Location ──────────────────────────────────────────────
-  const location = kvPairs.get('location') || kvPairs.get('headquarters') || '';
-  addField('basic.location', 'Company', location, 'Key-value', location ? 'medium' : 'low');
+  let location = kvPairs.get('location') || kvPairs.get('headquarters') || '';
+  if (!location) {
+    location = inferLocation(text);
+    if (location) addField('basic.location', 'Company', location, 'Inferred from context', 'medium');
+  } else {
+    addField('basic.location', 'Company', location, 'Key-value', 'medium');
+  }
 
   // ── Employee Count ────────────────────────────────────────
   const empStr = kvPairs.get('employee count') || kvPairs.get('employees') || kvPairs.get('team size') || '';
-  const employeeCount = parseInt(empStr) || 0;
+  let employeeCount = parseInt(empStr) || 0;
+  // Also try to infer from text like "90+ digital professionals"
+  if (employeeCount === 0) {
+    const teamMatch = text.match(/(\d+)\+?\s+(?:digital\s+)?professionals/i);
+    if (teamMatch) employeeCount = parseInt(teamMatch[1]);
+  }
   if (employeeCount > 0) {
-    addField('basic.employeeCount', 'Company', String(employeeCount), 'Key-value', 'medium');
+    addField('basic.employeeCount', 'Company', String(employeeCount), 'Key-value / inference', 'medium');
   }
 
   // ── Revenue ───────────────────────────────────────────────
-  const revenue = kvPairs.get('revenue') || kvPairs.get('revenue estimate') || '';
-  addField('basic.revenueEstimate', 'Company', revenue, 'Key-value', revenue ? 'medium' : 'low');
+  let revenue = kvPairs.get('revenue') || kvPairs.get('revenue estimate') || '';
+  if (!revenue) {
+    revenue = inferRevenue(text);
+    if (revenue) addField('basic.revenueEstimate', 'Company', revenue, 'Inferred from context', 'medium');
+  } else {
+    addField('basic.revenueEstimate', 'Company', revenue, 'Key-value', 'medium');
+  }
+
+  // ── Products/Services ─────────────────────────────────────
+  let productsServices = kvPairs.get('products/services') || kvPairs.get('products') || kvPairs.get('services') || '';
+  if (!productsServices) {
+    productsServices = inferProductsServices(text);
+    if (productsServices) addField('business.productsServices', 'Business', productsServices, 'Inferred from context', 'medium');
+  } else {
+    addField('business.productsServices', 'Business', productsServices, 'Key-value', 'medium');
+  }
+
+  // ── Sales Model ───────────────────────────────────────────
+  let salesModel = kvPairs.get('sales model') || kvPairs.get('sales') || '';
+  if (!salesModel) {
+    salesModel = inferSalesModel(text);
+    if (salesModel) addField('business.salesModel', 'Business', salesModel, 'Inferred from context', 'low');
+  } else {
+    addField('business.salesModel', 'Business', salesModel, 'Key-value', 'medium');
+  }
 
   // ── Related Entities ──────────────────────────────────────
   let relatedEntities = kvPairs.get('related company / parent ecosystem') ||
@@ -466,7 +649,11 @@ export function parseVibeInput(rawText: string): VibeParsedCompany {
       revenueEstimate: revenue,
       notes,
     },
-    business: emptyBusiness,
+    business: {
+      ...emptyBusiness,
+      productsServices,
+      salesModel,
+    },
     people: {
       ...emptyPeople,
       leadership: leadershipText,
@@ -509,6 +696,21 @@ export function generateVibeSummary(parsed: VibeParsedCompany): string {
 
   if (parsed.basic.name) {
     parts.push(`🏢 **${parsed.basic.name}**`);
+  }
+  if (parsed.basic.industry) {
+    parts.push(`🏭 ${parsed.basic.industry}`);
+  }
+  if (parsed.basic.location) {
+    parts.push(`📍 ${parsed.basic.location}`);
+  }
+  if (parsed.basic.revenueEstimate) {
+    parts.push(`💰 ${parsed.basic.revenueEstimate}`);
+  }
+  if (parsed.business.productsServices) {
+    parts.push(`📦 ${parsed.business.productsServices}`);
+  }
+  if (parsed.business.salesModel) {
+    parts.push(`💼 ${parsed.business.salesModel}`);
   }
   if (parsed.basic.website) {
     parts.push(`🌐 ${parsed.basic.website}`);

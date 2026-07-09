@@ -336,7 +336,7 @@ export default function Dashboard() {
             <div className="flex flex-col gap-1">
               {pipelineStats.topFit.map(({ company, fit }, i) => (
                 <div
-                  key={company.id}
+                  key={company.id || `topfit-${i}`}
                   className="flex items-center gap-4 p-3 rounded-md hover:bg-bg-input transition-colors duration-200 cursor-pointer"
                   onClick={() => navigate(`/company/${company.id}`)}
                 >
@@ -372,7 +372,7 @@ export default function Dashboard() {
           <div className="cards-grid">
             {companies
               .filter(c => c.pipelineStatus === 'converted')
-              .map(c => <CompanyCard key={c.id} company={c} />)}
+              .map((c, i) => <CompanyCard key={c.id || `conv-${i}`} company={c} />)}
           </div>
         </div>
       )}
@@ -382,8 +382,8 @@ export default function Dashboard() {
         <h2 className="section-title">Recent Analyses</h2>
         {metrics.recentAnalyses.length > 0 ? (
           <div className="cards-grid">
-            {metrics.recentAnalyses.map(company => (
-              <CompanyCard key={company.id} company={company} />
+            {metrics.recentAnalyses.map((company, i) => (
+              <CompanyCard key={company.id || `recent-${i}`} company={company} />
             ))}
           </div>
         ) : (
@@ -411,8 +411,8 @@ export default function Dashboard() {
             Companies with highest opportunity scores — sorted by overall fit
           </p>
           <div className="cards-grid">
-            {metrics.topTargets.map(company => (
-              <CompanyCard key={company.id} company={company} />
+            {metrics.topTargets.map((company, i) => (
+              <CompanyCard key={company.id || `target-${i}`} company={company} />
             ))}
           </div>
         </div>

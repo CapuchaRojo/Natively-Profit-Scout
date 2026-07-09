@@ -79,10 +79,10 @@ export function scoreProviderFit(company: Company): FitScore {
 // ── Signal Detectors ──
 
 function buildScoreInput(company: Company): ScoreInput {
-  const basic = company.basic;
-  const business = company.business;
-  const tools = company.tools;
-  const people = company.people;
+  const basic = company.basic || {} as any;
+  const business = company.business || {} as any;
+  const tools = company.tools || {} as any;
+  const people = company.people || {} as any;
   const combined = [
     basic.notes || '',
     business.productsServices || '',

@@ -70,6 +70,10 @@ export async function loadAllCompanies(): Promise<Company[]> {
 }
 
 export async function upsertCompany(company: Company): Promise<void> {
+  if (!company.id) {
+    console.warn('[DataSync] Skipping upsert — company has no id');
+    return;
+  }
   const userId = await requireUserId();
   const row = flattenCompany(company);
   const { error } = await supabase.from('companies').upsert(
@@ -94,11 +98,15 @@ export async function upsertAllCompanies(companies: Company[]): Promise<void> {
   if (companies.length === 0) return;
   const userId = await requireUserId();
 
-  const rows = companies.map(c => ({
-    ...flattenCompany(c),
-    user_id: userId,
-    updated_at: new Date().toISOString(),
-  }));
+  const rows = companies
+    .filter(c => c.id) // skip companies with null/undefined IDs
+    .map(c => ({
+      ...flattenCompany(c),
+      user_id: userId,
+      updated_at: new Date().toISOString(),
+    }));
+
+  if (rows.length === 0) return;
 
   // Upsert in chunks of 50 to avoid payload size issues
   const chunkSize = 50;

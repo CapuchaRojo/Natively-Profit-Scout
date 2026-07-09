@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { WizardStep } from '../components/WizardStep';
 import { useAutosave } from '../hooks/useAutosave';
+import { VibeInputTrigger } from '../components/recon/VibeInput';
 import type { CompanyBasic, CompanyBusiness, CompanyPeople, CompanyTools, WorkloadFriction, SalesContext, OfferType, NewAnalysisData } from '../types';
 
 const steps = ['Company', 'Business', 'People', 'Tools', 'Friction', 'Sales Context'];
@@ -90,6 +91,7 @@ export default function NewAnalysis() {
       <PageHeader
         title="New Company Analysis"
         subtitle="Complete the intake form to generate full sales intelligence"
+        actions={<VibeInputTrigger />}
       />
 
       <WizardStep steps={steps} currentStep={step} onStepClick={s => setStep(s)} />

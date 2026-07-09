@@ -129,6 +129,8 @@ function makeEmptyCompany(overrides: Partial<Company> = {}): Company {
     sourceImport: SOURCE_IMPORT_TAG,
     importedAt: now,
     contacts: [],
+    verifiedStatus: 'unknown',
+    isSample: false,
     createdAt: now,
     updatedAt: now,
     ...overrides,

@@ -72,6 +72,12 @@ export interface SalesContext {
 
 export type ConfidenceLevel = 'High' | 'Medium' | 'Low';
 
+export type VerifiedStatus =
+  | 'public_verified'
+  | 'internal_context_pending_confirmation'
+  | 'inferred'
+  | 'unknown';
+
 export type AccessStatus =
   | 'known'
   | 'suspected'
@@ -335,6 +341,8 @@ export interface Company {
   createdAt: string;
   updatedAt: string;
   isSample?: boolean;
+  // Verification status
+  verifiedStatus: VerifiedStatus;
   // Pipeline Scout fields (v1.0)
   accountType: AccountType;
   productLane: ProductLane;

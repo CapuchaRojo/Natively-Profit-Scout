@@ -6,6 +6,7 @@ import { StatCard } from '../components/StatCard';
 import { CompanyCard } from '../components/CompanyCard';
 import { DashboardIntelFeed } from '../components/DashboardIntelFeed';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
+import { VibeInputTrigger } from '../components/recon/VibeInput';
 import { scoreClientFit, scoreProviderFit } from '../services/pipelineFitScoring';
 import {
   Building2,
@@ -176,10 +177,13 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="Pipeline command center — real-time account intelligence"
         actions={
-          <button className="btn btn-primary" onClick={() => navigate('/new-analysis')}>
-            <Plus size={16} className="inline mr-1" />
-            New Analysis
-          </button>
+          <div className="flex items-center gap-3">
+            <VibeInputTrigger />
+            <button className="btn btn-primary" onClick={() => navigate('/new-analysis')}>
+              <Plus size={16} className="inline mr-1" />
+              New Analysis
+            </button>
+          </div>
         }
       />
 

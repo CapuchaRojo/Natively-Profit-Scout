@@ -336,9 +336,156 @@ export const aStormIsComing: Company = {
   isSample: true,
 };
 
+// ============== Vibe Generation (Hybrid Ecosystem) ==============
+export const vibeGeneration: Company = {
+  id: 'sample-vibe-generation',
+  ...pipelineDefaults,
+  accountType: 'partner' as const,
+  productLane: 'builder' as const,
+  pipelineStatus: 'qualified' as const,
+  priority: 'high' as const,
+  verifiedStatus: 'internal_context_pending_confirmation' as const,
+  basic: {
+    name: 'Vibe Generation',
+    website: 'https://vibegeneration.it/',
+    industry: 'AI Consulting / Software Development / Digital Agency',
+    location: 'Italy',
+    employeeCount: 90,
+    revenueEstimate: '€8M+ (Hybrid Group, 2024)',
+    notes: `INTERNAL CONTEXT (Andrea-sourced, pending confirmation):
+- Vibe Generation is expected to fully launch in September.
+- Financial backing mentioned: Versace family (internal context pending confirmation).
+- Andrea says Hybrid/Vibe are targeting a role similar to Accenture in Italy.
+- They are already engaging major Italian conglomerates (Ferrari, Barilla mentioned internally).
+- They are heavy users of Lovable and similar vibe-coding tools.
+- They reached out because they want to organize hackathons in Italy for talent scouting and enterprise innovation cycles.
+- Andrea moved the discussion toward them becoming early users of NativelyAI's full suite: Builder + Relay + Compute.
+- Potential path: test NativelyAI as their coding/product delivery tool, provide product feedback, and eventually promote/resell to enterprise customers.
+
+ENTITY DISTINCTION:
+- Hybrid.one / Hybrid Digital Consultancy is the established digital consultancy/group.
+- Vibe Generation appears to be the AI-focused brand/entity being launched around AI, software development, platforms, data, 3D, automation, and voice solutions.
+- Do not assume Vibe is legally a subsidiary until confirmed.
+- Classification: related AI brand / emerging sub-brand / possible venture under Hybrid ecosystem.
+
+RELATED ENTITIES:
+- Hybrid.one / Hybrid Digital Consultancy (parent/related ecosystem)
+- Hybrid website: https://hybrid.one/en/
+- Hybrid LinkedIn: https://it.linkedin.com/company/hybriddigitalconsultancy
+- Hybrid One Group publicly references 90+ digital professionals, >€8M revenue in 2024, six specialized branches.
+
+PRIMARY EXECUTIVE CONTACT:
+- Paolo Bonetti — CEO (shared leadership between Hybrid and Vibe Generation)
+- Likely LinkedIn: https://it.linkedin.com/in/ingpaolobonetti
+
+KNOWN HYBRID TEAM:
+- Paolo Bonetti — CEO
+- Davide Locatelli — Partner
+- Mustafa Azza — CMO
+- Edoardo Ramella — CSO
+- Cristina Velluti — CFO
+- Nicolò Comai — Media buyer
+- Sara Buscema — UI/UX Designer`,
+  },
+  business: {
+    productsServices: 'AI-native consulting and software delivery: AI, software development, platforms, data analysis, 3D, intelligent automation, voice solutions. Positioned as "Artificial intelligence humanly designed."',
+    targetCustomers: 'Enterprise clients in Italy — major Italian conglomerates. Consulting-led delivery model targeting digital transformation and AI adoption.',
+    salesModel: 'Consulting-led enterprise sales. Partner-driven relationship selling. Leveraging hackathons for talent scouting and client innovation cycles.',
+    deliveryModel: 'AI-native delivery using Lovable-style vibe-coding tools for prototyping. Seeking to standardize on a repeatable AI Software Factory platform for enterprise client delivery.',
+    supportModel: 'Consulting engagement model — partner handles client relationship. No formal support structure for delivery tooling.',
+    operationsModel: 'Project-based consulting delivery. Hybrid team structure across 6 specialized branches. Currently relies on vibe-coding tools for AI prototypes.',
+  },
+  people: {
+    leadership: 'Paolo Bonetti — CEO (shared leadership between Hybrid and Vibe Generation). Davide Locatelli — Partner. Mustafa Azza — CMO. Edoardo Ramella — CSO. Cristina Velluti — CFO.',
+    salesTeam: 'Partner-led sales. Paolo Bonetti and Davide Locatelli are primary commercial relationships.',
+    technicalTeam: 'Nicolò Comai — Media buyer. Sara Buscema — UI/UX Designer. Expected CTO/technical lead for Vibe Generation (to be confirmed). Heavy users of Lovable and vibe-coding tools.',
+    operationsTeam: '90+ digital professionals across Hybrid Group. Six specialized branches.',
+    supportTeam: 'Consulting engagement model — partner handles client relationship.',
+    financeAdmin: 'Cristina Velluti — CFO.',
+    knownChampions: 'Andrea (internal Natively contact) — driving the conversation. Paolo Bonetti — exploring AI-native delivery. Likely Davide Locatelli and Mustafa Azza as additional champions.',
+    knownBlockers: 'Potential CTO (not yet identified publicly) — likely technical objections around Lovable vs NativelyAI. Existing investment in Lovable-style tooling could create inertia.',
+    unknownDecisionMaker: 'Vibe Generation CTO (not yet identified). Versace family representative (financial backing, role unclear). Hybrid board/leadership group.',
+  },
+  tools: {
+    crm: 'Unknown — likely HubSpot or similar (Hybrid is a digital consultancy)',
+    websitePlatform: 'Custom — vibegeneration.it (pre-launch)',
+    schedulingTools: 'Unknown',
+    emailTools: 'Google Workspace or Microsoft 365',
+    projectManagement: 'Unknown — likely Linear, Notion, or similar modern tooling',
+    communicationTools: 'Slack or Microsoft Teams',
+    supportTools: 'Unknown',
+    billingTools: 'Unknown',
+    automationTools: 'Lovable and similar vibe-coding tools for AI prototyping',
+    aiTools: 'Lovable, vibe-coding tools, AI-assisted development tools. Heavy users of AI-native prototyping tooling.',
+    securityTools: 'Unknown',
+    unknownTools: 'Full stack details need confirmation in CTO meeting',
+  },
+  workloadFriction: {
+    dailyRepeats: 'Prototyping in Lovable is fast but hard to standardize across client projects. Team likely repeats similar setup/config for each new client engagement.',
+    manualCopyPaste: 'Prototype outputs from Lovable may need manual migration to production-grade delivery. No standardized template system across consulting engagements.',
+    delays: 'Transition from prototype to enterprise-grade delivery is manual and slow. No governed deployment pipeline for client projects.',
+    customerWait: 'Enterprise clients expect production-grade outputs, not just prototypes. Gap between Lovable prototype and deployable solution.',
+    employeeTimeWaste: 'Consultants spend time re-building similar patterns across clients. No reusable template library. Hackathon outputs not easily converted to delivery assets.',
+    missedRevenue: 'Cannot scale AI delivery as a consulting product without standardized tooling. Each client engagement is bespoke, limiting margins.',
+    errors: 'Inconsistent outputs across client projects. Hard to maintain quality standards when each consultant uses different tools/approaches.',
+    complianceRisk: 'No governance over model/provider choice. No audit trail for AI-generated outputs. No client workspace isolation.',
+    softwareCouldAssist: 'AI Software Factory with reusable templates, governed deployment, model/provider routing, credit management, and client workspace isolation.',
+  },
+  salesContext: {
+    approachReason: 'Vibe Generation is launching as an AI-native delivery brand under the Hybrid ecosystem. They currently use Lovable for prototyping but need a repeatable AI Software Factory for enterprise consulting delivery. They want hackathons for talent scouting and client innovation. Perfect strategic pilot for NativelyAI\'s agency/consulting delivery workflow.',
+    likelyBusinessPain: 'Lovable-style tools are fast for prototypes but too weak for repeatable enterprise delivery. Hard to standardize outputs, manage model/provider choice, connect prototypes to production, govern usage/credits, and turn hackathon outputs into reusable delivery assets.',
+    desiredResult: 'A repeatable AI Software Factory layer that enables Hybrid/Vibe consultants to prototype, validate, govern, deploy, and repeat client delivery across enterprise customers. Standardized hackathon-to-delivery pipeline.',
+    budgetOwner: 'Paolo Bonetti (CEO) and likely Vibe CTO. Budget capacity: enterprise consulting firm with €8M+ revenue.',
+    painFeeler: 'Vibe technical team (consultants using Lovable daily). Paolo Bonetti and Andrea (exploring better delivery tooling).',
+    dealBlocker: 'Potential CTO — may object that Lovable is "good enough" or that switching tools is risky. Existing investment in Lovable workflow. Need to prove NativelyAI is meaningfully better for enterprise delivery, not just different.',
+    dealChampion: 'Andrea (internal Natively contact) — driving the conversation. Paolo Bonetti — wants AI-native delivery brand to succeed.',
+  },
+  painPoints: [],
+  stakeholders: [],
+  toolMap: [],
+  highladerRepurpose: [],
+  opportunities: [],
+  salesPlan: undefined,
+  crmExport: undefined,
+  createdAt: now,
+  updatedAt: now,
+  publicIntelSources: [],
+  publicIntelSignals: [],
+  publicIntelOpenings: [],
+  isSample: true,
+  productLane: 'builder' as const,
+  fitScore: {
+    total: 8.5,
+    confidence: 'Medium' as const,
+    builderFit: 9,
+    computeFit: 6,
+    relayFit: 7,
+    providerFit: 0,
+    reasons: [
+      'AI-native consulting brand launching in September — perfect timing',
+      'Already using Lovable/vibe-coding tools — proven AI adoption',
+      'Enterprise client base (Ferrari, Barilla-level) — high-value delivery',
+      'Hackathon/talent-scouting motion aligns with NativelyAI Builder',
+      '90+ digital professionals in parent group — scaled deployment possible',
+      'Channel/reseller ambition — potential Italy market entry partner',
+      '€8M+ group revenue — budget capacity for enterprise tooling',
+    ],
+    evidenceUrls: [
+      'https://vibegeneration.it/',
+      'https://hybrid.one/en/',
+      'https://it.linkedin.com/company/hybriddigitalconsultancy',
+    ],
+  },
+  providerProfile: undefined,
+  sourceImport: '',
+  importedAt: '',
+  contacts: [],
+};
+
 export const sampleCompanies: Company[] = [
   techFlowSolutions,
   brightPathConsulting,
   greenLeafLandscaping,
   aStormIsComing,
+  vibeGeneration,
 ];

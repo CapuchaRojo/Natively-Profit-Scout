@@ -48,8 +48,17 @@ export default function AutoFillReconPage() {
   const navigate = useNavigate();
   const { showToast } = useToast();
   const { copyToClipboard } = useCopyWithToast();
+  const {
+    state,
+    getCompany,
+    updateCompany,
+    setCurrentCompany,
+  } = useApp();
 
-  const { state, getCompany, updateCompany } = useApp();
+  // Ensure sidebar enables company tabs when viewing via URL
+  useEffect(() => {
+    if (id) setCurrentCompany(id);
+  }, [id, setCurrentCompany]);
 
   const company = id ? getCompany(id) : (state.currentCompanyId ? getCompany(state.currentCompanyId) : undefined);
 const [activeTab, setActiveTab] = useState<Tab>('discover');

@@ -17,8 +17,13 @@ const departmentLabels: Record<PainDepartment, string> = {
 export default function PainPointMapPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getCompany, updateCompany } = useApp();
+  const { getCompany, updateCompany, setCurrentCompany } = useApp();
   const company = getCompany(id || '');
+
+  // Ensure sidebar enables company tabs when viewing via URL
+  useEffect(() => {
+    if (id) setCurrentCompany(id);
+  }, [id, setCurrentCompany]);
   const [expandedPain, setExpandedPain] = useState<string | null>(null);
 
   if (!company) {

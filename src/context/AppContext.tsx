@@ -63,6 +63,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
         companies: state.companies.filter(c => c.id !== action.payload),
         currentCompanyId: state.currentCompanyId === action.payload ? null : state.currentCompanyId,
       };
+    case 'SET_CURRENT_COMPANY':
+      return { ...state, currentCompanyId: action.payload };
     case 'SET_SETTINGS':
       return { ...state, settings: action.payload };
     case 'SET_DB_SYNCED':

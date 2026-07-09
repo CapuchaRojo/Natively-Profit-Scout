@@ -402,6 +402,7 @@ export function parseVibeInput(rawText: string): VibeParsedCompany {
   };
 
   const text = rawText.trim();
+  const lowerText = text.toLowerCase();
   const kvPairs = extractKeyValuePairs(text);
   const urls = extractUrls(text);
   const people = extractPeopleWithTitles(text);
@@ -606,7 +607,6 @@ export function parseVibeInput(rawText: string): VibeParsedCompany {
   };
 
   const detectedTools: CompanyTools = { ...emptyTools };
-  const lowerText = text.toLowerCase();
 
   // Detect AI tools
   const aiToolsFound: string[] = [];

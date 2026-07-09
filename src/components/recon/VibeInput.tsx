@@ -131,7 +131,8 @@ export function VibeInput({ onClose, embedded = false }: VibeInputProps) {
 
     // Map field key to the right property
     switch (fieldKey) {
-      case 'name': updated.basic = { ...updated.basic, name: editValue }; break;
+      case 'name':
+      case 'summaryName': updated.basic = { ...updated.basic, name: editValue }; break;
       case 'website': updated.basic = { ...updated.basic, website: editValue }; break;
       case 'linkedin': updated.linkedInUrl = editValue; break;
       case 'industry': updated.basic = { ...updated.basic, industry: editValue }; break;
@@ -302,7 +303,41 @@ Evaluate fit as a Builder early user...`;
                     <span className="text-2xl">🧠</span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-semibold text-foreground">{parsed.basic.name || 'Unnamed Company'}</span>
+                        {/* Editable company name */}
+                        {editingField === 'summaryName' ? (
+                          <div className="flex items-center gap-2 w-full">
+                            <input
+                              value={editValue}
+                              onChange={e => setEditValue(e.target.value)}
+                              className="flex-1 rounded border border-primary/50 bg-[#0f1a2f] text-foreground text-sm font-semibold px-2 py-1 font-mono focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              autoFocus
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveEdit('summaryName', 'company');
+                                if (e.key === 'Escape') setEditingField(null);
+                              }}
+                            />
+                            <button
+                              onClick={() => saveEdit('summaryName', 'company')}
+                              className="text-[10px] px-2 py-1 rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => setEditingField(null)}
+                              className="text-[10px] px-2 py-1 rounded bg-slate-500/20 text-muted-foreground hover:bg-slate-500/30 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => startEditing('summaryName', parsed.basic.name)}
+                            className="text-sm font-semibold text-foreground hover:text-primary hover:underline cursor-pointer transition-colors text-left"
+                            title="Click to edit company name"
+                          >
+                            {parsed.basic.name || 'Unnamed Company'}
+                          </button>
+                        )}
                         {parsed.basic.website && (
                           <a href={parsed.basic.website.startsWith('http') ? parsed.basic.website : `https://${parsed.basic.website}`}
                             target="_blank" rel="noopener noreferrer"
@@ -399,7 +434,7 @@ Evaluate fit as a Builder early user...`;
                                   </div>
                                   <button
                                     onClick={() => startEditing(field.key, field.value)}
-                                    className="opacity-0 group-hover:opacity-100 text-[10px] px-2 py-1 rounded text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all shrink-0"
+                                    className="text-[10px] px-2 py-1 rounded text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all shrink-0"
                                   >
                                     Edit
                                   </button>

@@ -17,7 +17,8 @@
     "ninjapear": "^1.6.0",
     "lucide-react": "^1.21.0",
     "@supabase/supabase-js": "^2.108.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

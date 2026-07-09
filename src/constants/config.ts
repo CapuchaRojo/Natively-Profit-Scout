@@ -18,7 +18,8 @@ export const FETCH_PUBLIC_URL_FUNCTION = 'fetch-public-url';
 
 export async function invokeEdgeFunction<T = unknown>(
   functionName: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<{ data: T | null; error: string | null }> {
   try {
     const response = await fetch(
@@ -30,6 +31,7 @@ export async function invokeEdgeFunction<T = unknown>(
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify(body),
+        signal,
       }
     );
 
@@ -42,6 +44,8 @@ export async function invokeEdgeFunction<T = unknown>(
     return { data: data as T, error: null };
   } catch (err: unknown) {
     const error = err as Error;
+    // Re-throw AbortError so smartEdgeCall can handle timeouts
+    if (error.name === 'AbortError') throw error;
     return { data: null, error: error.message || 'Failed to invoke edge function' };
   }
 }

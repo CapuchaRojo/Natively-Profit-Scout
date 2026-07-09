@@ -2,7 +2,8 @@
 // AppContext — React Context + localStorage + Supabase Persistence
 // ============================================================
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import type { Company, AppSettings, DashboardMetrics, NewAnalysisData, PublicIntelSource, PublicIntelSignal, PublicIntelOpening } from '../types';
+import type { Company, AppSettings, DashboardMetrics, NewAnalysisData, PublicIntelSource, PublicIntelSignal, PublicIntelOpening, AIFactoryChannelSalesRecord } from '../types';
+import type { ImportResult } from '../services/providerImportParser';
 import { sampleCompanies } from '../data/sampleCompanies';
 import { generateFullAnalysis, calculateOpportunityScore, calculateFitScore, calculatePainScore, calculateUrgencyScore } from '../services/analysisEngine';
 import { generateOnePageBrief } from '../services/exportUtilities';
@@ -25,6 +26,7 @@ interface AppState {
   settings: AppSettings;
   currentCompanyId: string | null;
   dbSynced: boolean;
+  aiFactoryRecords: AIFactoryChannelSalesRecord[];
 }
 
 type AppAction =
@@ -34,7 +36,11 @@ type AppAction =
   | { type: 'DELETE_COMPANY'; payload: string }
   | { type: 'SET_CURRENT_COMPANY'; payload: string | null }
   | { type: 'SET_SETTINGS'; payload: AppSettings }
-  | { type: 'SET_DB_SYNCED'; payload: boolean };
+  | { type: 'SET_DB_SYNCED'; payload: boolean }
+  | { type: 'SET_AI_FACTORY_RECORDS'; payload: AIFactoryChannelSalesRecord[] }
+  | { type: 'ADD_AI_FACTORY_RECORD'; payload: AIFactoryChannelSalesRecord }
+  | { type: 'UPDATE_AI_FACTORY_RECORD'; payload: { id: string; updates: Partial<AIFactoryChannelSalesRecord> } }
+  | { type: 'DELETE_AI_FACTORY_RECORD'; payload: string };
 
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
@@ -57,12 +63,25 @@ function appReducer(state: AppState, action: AppAction): AppState {
         companies: state.companies.filter(c => c.id !== action.payload),
         currentCompanyId: state.currentCompanyId === action.payload ? null : state.currentCompanyId,
       };
-    case 'SET_CURRENT_COMPANY':
-      return { ...state, currentCompanyId: action.payload };
     case 'SET_SETTINGS':
       return { ...state, settings: action.payload };
     case 'SET_DB_SYNCED':
       return { ...state, dbSynced: action.payload };
+    case 'SET_AI_FACTORY_RECORDS':
+      return { ...state, aiFactoryRecords: action.payload };
+    case 'ADD_AI_FACTORY_RECORD':
+      return { ...state, aiFactoryRecords: [...state.aiFactoryRecords, action.payload] };
+    case 'UPDATE_AI_FACTORY_RECORD': {
+      const { id, updates } = action.payload;
+      return {
+        ...state,
+        aiFactoryRecords: state.aiFactoryRecords.map(r =>
+          r.id === id ? { ...r, ...updates, updated_at: new Date().toISOString() } : r
+        ),
+      };
+    }
+    case 'DELETE_AI_FACTORY_RECORD':
+      return { ...state, aiFactoryRecords: state.aiFactoryRecords.filter(r => r.id !== action.payload) };
     default:
       return state;
   }
@@ -86,6 +105,15 @@ function normalizeCompany(c: Company): Company {
     highladerRepurpose: c.highladerRepurpose || [],
     opportunities: c.opportunities || [],
     comments: c.comments || [],
+    contacts: (c.contacts || []).map(ct => ({
+      ...ct,
+      id: ct.id || `ct-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      fullName: ct.fullName || `${ct.firstName || ''} ${ct.lastName || ''}`.trim(),
+      isPrimary: ct.isPrimary ?? false,
+      source: ct.source || 'import',
+    })),
+    sourceImport: c.sourceImport || '',
+    importedAt: c.importedAt || '',
     accountType: c.accountType || 'unknown',
     productLane: c.productLane || 'unknown',
     pipelineStatus: c.pipelineStatus || 'new',
@@ -115,6 +143,7 @@ function loadStateFromLocal(): AppState {
         settings: { ...defaultSettings, ...parsed.settings },
         currentCompanyId: parsed.currentCompanyId || null,
         dbSynced: false,
+        aiFactoryRecords: parsed.aiFactoryRecords || createDefaultAIFactoryRecords(),
       };
     }
     // First run — seed with sample data
@@ -126,9 +155,10 @@ function loadStateFromLocal(): AppState {
       settings: defaultSettings,
       currentCompanyId: null,
       dbSynced: false,
+      aiFactoryRecords: createDefaultAIFactoryRecords(),
     };
   } catch {
-    return { companies: [], settings: defaultSettings, currentCompanyId: null, dbSynced: false };
+    return { companies: [], settings: defaultSettings, currentCompanyId: null, dbSynced: false, aiFactoryRecords: createDefaultAIFactoryRecords() };
   }
 }
 
@@ -138,6 +168,7 @@ function saveStateToLocal(state: AppState): void {
       companies: state.companies,
       settings: state.settings,
       currentCompanyId: state.currentCompanyId,
+      aiFactoryRecords: state.aiFactoryRecords,
     }));
   } catch (err) {
     console.error('Failed to save state:', err);
@@ -147,7 +178,130 @@ function saveStateToLocal(state: AppState): void {
 // ============================================================
 // Defaults
 // ============================================================
+// ============================================================
+// AI Factory Channel Sales — Default Seed Records
+// ============================================================
 
+function createDefaultAIFactoryRecords(): AIFactoryChannelSalesRecord[] {
+  const now = new Date().toISOString();
+
+  const nvidia: AIFactoryChannelSalesRecord = {
+    id: 'ai-factory-nvidia',
+    account_name: 'NVIDIA',
+    normalized_account_name: 'nvidia',
+    segment: 'AI Factory Channel Sales',
+    source: 'push_meeting_pawel_ai_factory_channel_sales',
+    source_import: 'ai_factory_channel_sales_2026_07',
+    channel_angle: 'Position NativelyAI around the AI Factory narrative: Builder as a developer-facing creation layer, Compute as workload execution infrastructure, and Relay / Inference as model access and routing layer for AI-native software.',
+    gpu_ecosystem_relevance: 'NVIDIA is strategically relevant because its GPU ecosystem, developer platform, and enterprise AI infrastructure footprint align with Native.Compute, AI workload execution, and partner-led AI software deployment.',
+    builder_default_developer_tool_angle: 'Explore whether Native.Builder can be framed as a developer-facing AI-native app creation layer for teams building on top of GPU-enabled infrastructure.',
+    compute_relay_relevance: 'Strong relevance for Native.Compute and Native.Relay / Inference through GPU workload execution, model routing, inference access, usage tracking, and cost-aware AI deployment.',
+    known_warm_connections: '',
+    target_department: 'Developer Relations, AI Platform, Enterprise AI, Partner Ecosystem, Cloud/Infrastructure Partnerships, Startup/Developer Programs.',
+    buyer_role_hypothesis: 'DevRel lead, AI infrastructure partner manager, enterprise AI platform leader, GPU cloud ecosystem lead, developer tools partnership lead.',
+    natively_lane: 'Multi-lane',
+    priority: 'Tier 1',
+    owner: 'Adam',
+    technical_validator: 'Pawel',
+    status: 'Research',
+    next_action: 'Research NVIDIA partner programs, developer ecosystem contacts, AI Factory messaging overlap, and possible warm intros through the team.',
+    notes: 'High-priority channel-sales target for Pawel\'s AI Factory narrative. Do not outreach until the target angle and warm connection map are reviewed.',
+    needs_clarification: false,
+    clarification_note: '',
+    created_at: now,
+    updated_at: now,
+    last_checked: now,
+  };
+
+  const dell: AIFactoryChannelSalesRecord = {
+    id: 'ai-factory-dell',
+    account_name: 'Dell',
+    normalized_account_name: 'dell',
+    segment: 'AI Factory Channel Sales',
+    source: 'push_meeting_pawel_ai_factory_channel_sales',
+    source_import: 'ai_factory_channel_sales_2026_07',
+    channel_angle: 'Position NativelyAI as a complementary AI execution stack for Dell\'s enterprise infrastructure and developer/customer ecosystem: Builder for AI-native app creation, Compute for workload execution, and Relay / Inference for model access and routing.',
+    gpu_ecosystem_relevance: 'Dell is relevant through enterprise infrastructure, AI servers, GPU-enabled systems, and customer deployment channels.',
+    builder_default_developer_tool_angle: 'Explore Native.Builder as a default or recommended tool for developers and enterprise teams building AI-native internal tools or workflows on Dell-backed AI infrastructure.',
+    compute_relay_relevance: 'Strong relevance for Native.Compute and Relay / Inference if Dell customers need workload execution, model routing, usage tracking, and governed AI deployment paths.',
+    known_warm_connections: '',
+    target_department: 'AI Solutions, Enterprise Infrastructure, Developer/Partner Programs, Channel Partnerships, AI Factory / AI Infrastructure GTM, Customer Innovation.',
+    buyer_role_hypothesis: 'AI solutions leader, partner/channel manager, enterprise AI infrastructure lead, customer innovation lead, developer platform ecosystem lead.',
+    natively_lane: 'Multi-lane',
+    priority: 'Tier 1',
+    owner: 'Adam',
+    technical_validator: 'Pawel',
+    status: 'Research',
+    next_action: 'Research Dell AI Factory messaging, partner ecosystem, developer programs, and possible alignment with Builder as a software layer for AI infrastructure customers.',
+    notes: 'High-priority channel-sales target. Clarify with Pawel whether Dell means Dell Technologies broadly or a specific Dell AI infrastructure team.',
+    needs_clarification: false,
+    clarification_note: '',
+    created_at: now,
+    updated_at: now,
+    last_checked: now,
+  };
+
+  const hpe: AIFactoryChannelSalesRecord = {
+    id: 'ai-factory-hpe',
+    account_name: 'Hewlett Packard Enterprise (HPE)',
+    normalized_account_name: 'hewlett_packard_enterprise_hpe',
+    segment: 'AI Factory Channel Sales',
+    source: 'push_meeting_pawel_ai_factory_channel_sales',
+    source_import: 'ai_factory_channel_sales_2026_07',
+    channel_angle: 'Position NativelyAI around HPE\'s enterprise AI infrastructure ecosystem: Builder for AI-native software creation, Compute for workload execution, and Relay / Inference for routed model access and usage tracking.',
+    gpu_ecosystem_relevance: 'HPE is relevant through enterprise infrastructure, hybrid cloud, AI systems, and customer deployment environments.',
+    builder_default_developer_tool_angle: 'Explore whether Native.Builder can act as a developer-facing layer for HPE customers building AI-native apps, internal workflows, and governed enterprise tools.',
+    compute_relay_relevance: 'Strong relevance for Native.Compute and Relay / Inference in hybrid cloud, enterprise AI workload execution, model routing, and governed infrastructure environments.',
+    known_warm_connections: '',
+    target_department: 'Hybrid Cloud, AI Infrastructure, Enterprise AI, Partner Ecosystem, Developer Programs, Customer Innovation.',
+    buyer_role_hypothesis: 'Hybrid cloud leader, AI infrastructure partner lead, enterprise AI solutions lead, developer ecosystem lead, customer innovation executive.',
+    natively_lane: 'Multi-lane',
+    priority: 'Tier 1',
+    owner: 'Adam',
+    technical_validator: 'Pawel',
+    status: 'Research',
+    next_action: 'Clarify whether Pawel meant HPE, HP Inc., or both. Then research HPE AI infrastructure ecosystem and partner route.',
+    notes: 'Likely stronger fit than HP Inc. for Compute/Relay/channel-sales due to enterprise infrastructure relevance, but needs confirmation.',
+    needs_clarification: true,
+    clarification_note: 'Confirm whether Pawel meant HPE specifically, HP Inc., or both.',
+    created_at: now,
+    updated_at: now,
+    last_checked: now,
+  };
+
+  const hpInc: AIFactoryChannelSalesRecord = {
+    id: 'ai-factory-hp-inc',
+    account_name: 'HP Inc.',
+    normalized_account_name: 'hp_inc',
+    segment: 'AI Factory Channel Sales',
+    source: 'push_meeting_pawel_ai_factory_channel_sales',
+    source_import: 'ai_factory_channel_sales_2026_07',
+    channel_angle: 'Potential AI PC, developer, and workforce productivity channel angle. Needs clarification because HP Inc. may be less directly aligned with GPU infrastructure than HPE.',
+    gpu_ecosystem_relevance: 'Possible relevance through AI PCs, workstations, developer devices, and enterprise customer channels, but less direct Compute/provider relevance than HPE.',
+    builder_default_developer_tool_angle: 'Explore whether Native.Builder can be positioned for developers, SMBs, agencies, or internal teams building AI-native software on HP-supported workstations or AI PC ecosystems.',
+    compute_relay_relevance: 'Potential Relay / Inference and Builder relevance. Compute relevance needs validation.',
+    known_warm_connections: '',
+    target_department: 'AI PC, Workstations, Developer Ecosystem, Partner Programs, Enterprise Productivity, Innovation.',
+    buyer_role_hypothesis: 'AI PC ecosystem lead, workstation partner manager, developer ecosystem lead, enterprise innovation lead.',
+    natively_lane: 'Multi-lane',
+    priority: 'Tier 2',
+    owner: 'Adam',
+    technical_validator: 'Pawel',
+    status: 'Research',
+    next_action: 'Clarify whether Pawel meant HP Inc. or HPE. Keep this record in Research until clarified.',
+    notes: 'Create as draft/review record only. Do not prioritize until clarified.',
+    needs_clarification: true,
+    clarification_note: 'Confirm whether Pawel meant HP Inc., HPE, or both.',
+    created_at: now,
+    updated_at: now,
+    last_checked: now,
+  };
+
+  return [nvidia, dell, hpe, hpInc];
+}
+
+// ============================================================
+// Defaults
 const defaultSettings: AppSettings = {
   userName: '',
   company: '',
@@ -174,10 +328,6 @@ const defaultSettings: AppSettings = {
   },
 };
 
-// ============================================================
-// Context
-// ============================================================
-
 interface AppContextType {
   state: AppState;
   createCompany: (data: NewAnalysisData) => Company;
@@ -196,6 +346,11 @@ interface AppContextType {
   addPublicIntelOpenings: (companyId: string, openings: PublicIntelOpening[]) => void;
   clearPublicIntelForCompany: (companyId: string) => void;
   addCompany: (company: Company) => void;
+  bulkImportCompanies: (results: ImportResult[]) => void;
+  addAIFactoryRecord: (record: AIFactoryChannelSalesRecord) => void;
+  updateAIFactoryRecord: (id: string, updates: Partial<AIFactoryChannelSalesRecord>) => void;
+  deleteAIFactoryRecord: (id: string) => void;
+  setAIFactoryRecords: (records: AIFactoryChannelSalesRecord[]) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -256,7 +411,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     saveStateToLocal(state);
   }, [state]);
 
-  // ── Persist to Supabase (debounced per-company on relevant changes) ──
+  // ── Persist to Supabase (debounced on relevant changes) ──
   useEffect(() => {
     if (!state.dbSynced) return;
 
@@ -280,7 +435,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       painPoints: [], stakeholders: [], toolMap: [], highladerRepurpose: [], opportunities: [],
       publicIntelSources: [], publicIntelSignals: [], publicIntelOpenings: [],
       reconFindings: undefined,
-      comments: [],
+      comments: [], contacts: [],
+      sourceImport: '', importedAt: '',
       accountType: 'unknown', productLane: 'unknown', pipelineStatus: 'new',
       owner: '', priority: 'unset', nextAction: '', nextActionDate: '', lastContactedAt: '',
       sourceCampaign: '', utmSource: '', utmMedium: '', utmCampaign: '', utmContent: '',
@@ -387,12 +543,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'ADD_COMPANY', payload: company });
   }, []);
 
+  const bulkImportCompanies = useCallback((results: ImportResult[]) => {
+    for (const result of results) {
+      if (result.action === 'create') {
+        dispatch({ type: 'ADD_COMPANY', payload: result.company });
+      } else if (result.action === 'update') {
+        dispatch({ type: 'UPDATE_COMPANY', payload: { id: result.company.id, updates: result.company } });
+      }
+      // 'skip' — do nothing
+    }
+  }, []);
+  // ── AI Factory actions ──
+
+  const addAIFactoryRecord = useCallback((record: AIFactoryChannelSalesRecord) => {
+    dispatch({ type: 'ADD_AI_FACTORY_RECORD', payload: record });
+  }, []);
+
+  const updateAIFactoryRecord = useCallback((id: string, updates: Partial<AIFactoryChannelSalesRecord>) => {
+    dispatch({ type: 'UPDATE_AI_FACTORY_RECORD', payload: { id, updates } });
+  }, []);
+
+  const deleteAIFactoryRecord = useCallback((id: string) => {
+    dispatch({ type: 'DELETE_AI_FACTORY_RECORD', payload: id });
+  }, []);
+
+  const setAIFactoryRecords = useCallback((records: AIFactoryChannelSalesRecord[]) => {
+    dispatch({ type: 'SET_AI_FACTORY_RECORDS', payload: records });
+  }, []);
+
   const value: AppContextType = {
     state, createCompany, updateCompany, deleteCompany, getCompany, setCurrentCompany,
     updateSettings, regenerateAnalysis, getDashboardMetrics, getOnePageBrief,
     addPublicIntelSource, updatePublicIntelSource, deletePublicIntelSource,
     addPublicIntelSignals, addPublicIntelOpenings, clearPublicIntelForCompany,
-    addCompany,
+    addCompany, bulkImportCompanies,
+    addAIFactoryRecord, updateAIFactoryRecord, deleteAIFactoryRecord, setAIFactoryRecords,
   };
 
   return (
@@ -401,7 +586,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     </AppContext.Provider>
   );
 }
-
 export function useApp(): AppContextType {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useApp must be used within AppProvider');

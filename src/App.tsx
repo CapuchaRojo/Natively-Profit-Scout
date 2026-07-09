@@ -19,6 +19,7 @@ import CRMExportPage from './pages/CRMExport';
 import PublicIntelPage from './pages/PublicIntel';
 import AutoFillReconPage from './pages/AutoFillRecon';
 import PipelineScoutPage from './pages/PipelineScout';
+import AIFactoryChannelSalesPage from './pages/AIFactoryChannelSales';
 import SettingsPage from './pages/Settings';
 
 export default function App() {
@@ -44,6 +45,7 @@ export default function App() {
                           <Routes>
                             <Route path="/" element={<Dashboard />} />
                             <Route path="/pipeline" element={<PipelineScoutPage />} />
+                            <Route path="/ai-factory" element={<AIFactoryChannelSalesPage />} />
                             <Route path="/new-analysis" element={<NewAnalysis />} />
                             <Route path="/public-intel" element={<PublicIntelPage />} />
                             <Route path="/company/:id" element={<CompanyProfilePage />} />
@@ -59,11 +61,11 @@ export default function App() {
                             <Route path="*" element={<Navigate to="/" replace />} />
                           </Routes>
                         </ErrorBoundary>
-                      </main>
-                    </div>
-                  </ToastProvider>
-                </AppProvider>
-              </AuthGuard>
+                    </main>
+                  </div>
+                </ToastProvider>
+              </AppProvider>
+            </AuthGuard>
             }
           />
         </Routes>

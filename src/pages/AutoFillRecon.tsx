@@ -12,6 +12,7 @@ import { useToast, useCopyWithToast } from '../components/Toast';
 import { ReconProgressBar } from '../components/recon/ReconProgressBar';
 import { ChatGptJsonPaste } from '../components/recon/ChatGptJsonPaste';
 import { LinkedInSourceAssistant } from '../components/recon/LinkedInSourceAssistant';
+import { useAutosave } from '../hooks/useAutosave';
 import {
   discoverPublicUrls, fetchWithCorsFallback,
   applyReconFindingsToCompany,
@@ -64,11 +65,23 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [fetchProgress, setFetchProgress] = useState('');
   const [manualPasteText, setManualPasteText] = useState('');
   const [analyzingUrlId, setAnalyzingUrlId] = useState<string | null>(null);
-  // People Signal Engine state
-  const [manualPeopleText, setManualPeopleText] = useState('');
-  const [publicPeopleNotes, setPublicPeopleNotes] = useState('');
-  const [publicLeadershipText, setPublicLeadershipText] = useState('');
-  const [peopleSourceType, setPeopleSourceType] = useState<PeopleSignalSourceType>('linkedin_company_about');
+
+  // ── Autosave: persist text inputs across navigation ────────
+  const { restoredDraft: reconDraft, clearDraft: clearReconDraft } = useAutosave({
+    key: `recon-${company?.id}`,
+    data: { manualPasteText, extraUrls, manualPeopleText, peopleSourceUrl },
+    delayMs: 1500,
+    shouldSave: (d) => !!d.manualPeopleText || !!d.extraUrls || !!d.manualPasteText,
+  });
+
+  useEffect(() => {
+    if (reconDraft) {
+      if (reconDraft.manualPasteText) setManualPasteText(reconDraft.manualPasteText);
+      if (reconDraft.extraUrls) setExtraUrls(reconDraft.extraUrls);
+      if (reconDraft.manualPeopleText) setManualPeopleText(reconDraft.manualPeopleText);
+      if (reconDraft.peopleSourceUrl) setPeopleSourceUrl(reconDraft.peopleSourceUrl);
+    }
+  }, [reconDraft]);
   const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
   const [peopleRoleMap, setPeopleRoleMap] = useState<RoleMapEntry[]>([]);
   const [peopleStakeholderHyps, setPeopleStakeholderHyps] = useState<StakeholderHypothesis[]>([]);

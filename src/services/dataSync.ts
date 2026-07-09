@@ -31,6 +31,7 @@ export interface CompanyRow {
   priority: string;
   owner: string;
   fit_score_total: number;
+  source_import: string;
   data: Company;
   created_at: string;
   updated_at: string;
@@ -47,6 +48,7 @@ function flattenCompany(c: Company): Omit<CompanyRow, 'created_at' | 'updated_at
     priority: c.priority || 'unset',
     owner: c.owner || '',
     fit_score_total: c.fitScore?.total ?? 0,
+    source_import: c.sourceImport || '',
     data: c,
   };
 }

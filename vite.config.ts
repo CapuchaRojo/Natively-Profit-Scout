@@ -32,27 +32,9 @@ export default defineConfig(({ command }) => ({
       },
       include: '**/*.svg?react',
     }),
-    {
-        name: 'natively-runtime-script',
-        transformIndexHtml(html) {
-            if (command === 'build') {
-                return html;
-            }
-            return html.replace(
-                '</head>',
-                `  <script type="module" src="/natively-runtime.js"></script>
-</head>`
-            );
-        },
-    }
   ],
   server: {
     allowedHosts: true,
-    headers: {
-      'Cross-Origin-Embedder-Policy': 'credentialless',
-      'Cross-Origin-Resource-Policy': 'cross-origin',
-      'Content-Security-Policy': 'frame-ancestors *',
-    },
     hmr: false,
   },
 }))

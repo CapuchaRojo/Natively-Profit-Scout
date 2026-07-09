@@ -354,6 +354,10 @@ export interface Company {
   comments: ScoutComment[];
   providerProfile?: ProviderProfile;
   fitScore?: FitScore;
+  // Bulk provider import fields (v1.2)
+  sourceImport: string;
+  importedAt: string;
+  contacts: ProviderContact[];
 }
 
 export interface AppSettings {
@@ -886,12 +890,17 @@ export type ProductLane =
 export type PipelineStatus =
   | 'new'
   | 'researching'
+  | 'research'
   | 'qualified'
   | 'contacted'
+  | 'meeting'
   | 'meeting_booked'
   | 'active_conversation'
-  | 'not_fit'
+  | 'nda_diligence'
+  | 'qualified_constituent'
   | 'follow_up_later'
+  | 'not_fit'
+  | 'monitor'
   | 'converted'
   | 'archived';
 
@@ -902,8 +911,10 @@ export type ProviderType =
   | 'edge_compute'
   | 'hardware_partner'
   | 'infrastructure_reseller'
+  | 'chip_manufacturer'
+  | 'hyperscaler'
+  | 'neo_cloud'
   | 'unknown';
-
 export type CommentType =
   | 'general_note'
   | 'call_note'
@@ -953,6 +964,23 @@ export interface FitScore {
   evidenceUrls: string[];
 }
 
+// ============================================================
+// Bulk Provider Import Types (v1.2)
+// ============================================================
+
+export interface ProviderContact {
+  id: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  position: string;
+  email: string;
+  phone: string;
+  relationshipNote: string;
+  isPrimary: boolean;
+  source: string;
+}
+
 export interface PipelineDiscoveryCandidate {
   id: string;
   name: string;
@@ -985,4 +1013,88 @@ export interface HubspotExportRow {
   next_action: string;
   notes: string;
   evidence_urls: string;
+  evidence_urls: string;
+}
+
+// ============================================================
+// Event Import Types (v1.3)
+// ============================================================
+
+export interface ExtractedPerson {
+  name: string;
+  role?: string;
+  sourceBullet: string;
+}
+
+export interface EventDiscoveryCandidate {
+  id: string;
+  companyName: string;
+  website: string;
+  eventName?: string;
+  industry?: string;
+  description?: string;
+  extractedPeople: ExtractedPerson[];
+  extractedTechStack: string[];
+  rawBullets: string[];
+  tags: string[];
+  confidence: ConfidenceLevel;
+  sourceFile: string;
+  status: 'pending' | 'imported' | 'research_queue' | 'skipped';
+  suggestedAccountType: AccountType;
+  suggestedProductLane: ProductLane;
+  editableNotes: string;
+  matchedExistingCompanyId?: string;
+}
+
+// ============================================================
+// AI Factory Channel Sales Types (v2.0)
+// ============================================================
+
+export type AIFactoryNativelyLane =
+  | 'Builder'
+  | 'Compute'
+  | 'Relay'
+  | 'Multi-lane'
+  | 'Provider / Channel';
+
+export type AIFactoryPriority = 'Tier 1' | 'Tier 2' | 'Tier 3';
+
+export type AIFactoryStatus =
+  | 'Research'
+  | 'Researching'
+  | 'Contact identified'
+  | 'Outreach ready'
+  | 'Contacted'
+  | 'Meeting requested'
+  | 'Meeting booked'
+  | 'Partner/channel route'
+  | 'Not a fit'
+  | 'Monitor';
+
+export interface AIFactoryChannelSalesRecord {
+  id: string;
+  account_name: string;
+  normalized_account_name: string;
+  segment: string;
+  source: string;
+  source_import: string;
+  channel_angle: string;
+  gpu_ecosystem_relevance: string;
+  builder_default_developer_tool_angle: string;
+  compute_relay_relevance: string;
+  known_warm_connections: string;
+  target_department: string;
+  buyer_role_hypothesis: string;
+  natively_lane: AIFactoryNativelyLane;
+  priority: AIFactoryPriority;
+  owner: string;
+  technical_validator: string;
+  status: AIFactoryStatus;
+  next_action: string;
+  notes: string;
+  needs_clarification: boolean;
+  clarification_note: string;
+  created_at: string;
+  updated_at: string;
+  last_checked: string;
 }

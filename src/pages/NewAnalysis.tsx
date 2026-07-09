@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
 import { WizardStep } from '../components/WizardStep';
+import { useAutosave } from '../hooks/useAutosave';
 import type { CompanyBasic, CompanyBusiness, CompanyPeople, CompanyTools, WorkloadFriction, SalesContext, OfferType, NewAnalysisData } from '../types';
 
 const steps = ['Company', 'Business', 'People', 'Tools', 'Friction', 'Sales Context'];
@@ -27,11 +28,34 @@ export default function NewAnalysis() {
   const [offerType, setOfferType] = useState<OfferType>('ai_automation');
   const [submitting, setSubmitting] = useState(false);
 
+  // ── Autosave: persist form draft to localStorage ────────────
+  const { restoredDraft, clearDraft, isSaving } = useAutosave({
+    key: 'new-analysis',
+    data: { basic, business, people, tools, friction, context, offerType, step },
+    delayMs: 1200,
+    shouldSave: (d) => !!d.basic.name || !!d.basic.website,
+  });
+
+  // Restore draft on mount if one exists
+  useEffect(() => {
+    if (restoredDraft) {
+      setBasic(restoredDraft.basic);
+      setBusiness(restoredDraft.business);
+      setPeople(restoredDraft.people);
+      setTools(restoredDraft.tools);
+      setFriction(restoredDraft.friction);
+      setContext(restoredDraft.context);
+      setOfferType(restoredDraft.offerType);
+      setStep(restoredDraft.step);
+    }
+  }, [restoredDraft]);
+
   const handleSubmit = () => {
     setSubmitting(true);
     try {
       const data: NewAnalysisData = { basic, business, people, tools, workloadFriction: friction, salesContext: context, offerType };
       const company = createCompany(data);
+      clearDraft(); // Remove saved draft on successful submission
       navigate(`/company/${company.id}`);
     } catch (err) {
       console.error('Failed to create analysis:', err);
@@ -218,7 +242,7 @@ export default function NewAnalysis() {
             <button className="btn btn-ghost" onClick={() => navigate('/')}>
               Cancel
             </button>
-            {step < 6 ? (
+{step < 6 ? (
               <button className="btn btn-primary" onClick={() => setStep(s => s + 1)}>
                 Next →
               </button>
@@ -228,6 +252,21 @@ export default function NewAnalysis() {
               </button>
             )}
           </div>
+        </div>
+
+        {/* Autosave indicator */}
+        <div style={{
+          marginTop: 8,
+          fontSize: 10,
+          color: isSaving ? '#64748b' : '#4a5568',
+          textAlign: 'right',
+          minHeight: 16,
+          transition: 'color 0.2s',
+        }}>
+          {isSaving
+            ? '⏳ Saving draft...'
+            : (restoredDraft ? '✅ Draft restored — changes auto-saved' : '💾 Auto-saved')
+          }
         </div>
       </div>
     </div>

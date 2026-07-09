@@ -667,6 +667,9 @@ import type { Stakeholder } from '../types';
 import type { NewsIntelItem } from './newsIntelEngine';
 import type { SocialFootprint, SocialDiscoveryUrl } from './socialDiscoveryEngine';
 
+// ── Phase 2a power-up imports ────────────────────────────────
+import { runBatched } from './edgeRequestManager';
+
 export interface AggressiveReconResult {
   extractedPeople: ExtractedPerson[];
   searchIntel: { query: string; signals: IntelSignal[] }[];
@@ -734,48 +737,61 @@ export async function runFullAggressiveRecon(
       const teamPaths = ['/team', '/our-team', '/leadership', '/management', '/about', '/about-us', '/people', '/staff', '/executives', '/founders'];
       const teamUrls = teamPaths.map(p => `${baseOrigin}${p}`);
 
+      // Use batched executor with concurrency 5
       const teamResult = await scanTeamPagesViaBackend(teamUrls);
       if (teamResult.success && teamResult.pages && teamResult.pages.length > 0) {
-        for (const page of teamResult.pages) {
-          if (page.success && page.html) {
-            const people = extractPeopleFromHtml(page.html, page.url);
+        await runBatched(
+          teamResult.pages.filter(p => p.success && p.html),
+          async (page) => {
+            const people = extractPeopleFromHtml(page.html!, page.url);
             if (people && people.length > 0) extractedPeople.push(...people);
-          }
-        }
+          },
+          { batchSize: 5, label: 'team-page-extraction' }
+        );
       } else {
-        // Try individual pages as fallback
-        for (const url of teamUrls.slice(0, 5)) {
-          try {
-            const result = await fetchWithCorsFallback(url);
-            if (result.success && result.html) {
-              const people = extractPeopleFromHtml(result.html, url);
-              if (people && people.length > 0) extractedPeople.push(...people);
-            }
-          } catch { /* continue */ }
-        }
+        // Try individual pages as fallback with batched fetches
+        console.log('[AggressiveRecon] scanTeamPagesViaBackend returned no results, trying individual fetches...');
+        await runBatched(
+          teamUrls.slice(0, 5),
+          async (url) => {
+            try {
+              const result = await fetchWithCorsFallback(url);
+              if (result.success && result.html) {
+                const people = extractPeopleFromHtml(result.html, url);
+                if (people && people.length > 0) extractedPeople.push(...people);
+              }
+            } catch { /* continue */ }
+          },
+          { batchSize: 3, label: 'individual-team-fetch' }
+        );
       }
     } catch (err) {
       errors.push(`Team page scan failed: ${String(err)}`);
     }
   }
-
-  // ── Step 2: Web search (aggressive signals) ─────────────
+  // ── Step 2: Web search with batched queries ────────────────
   if (!options?.skipSearch) {
     const maxQueries = options?.maxSearchQueries || 6;
-    const queries = AGGRESSIVE_SEARCH_QUERIES?.slice(0, maxQueries) || [];
+    const queries = (AGGRESSIVE_SEARCH_QUERIES?.slice(0, maxQueries) || []).map(q => ({
+      query: q.query.replace('{company}', companyName),
+      signalType: q.signalType,
+    }));
 
-    for (const { query } of queries) {
-      try {
-        const q = query.replace('{company}', companyName);
-        const searchResult = await searchWebViaBackend(q, 5);
-        if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
-          const intel = processSearchResults(q, searchResult.results, companyName);
-          searchIntel.push({ query: q, signals: intel.signals || [] });
+    await runBatched(
+      queries,
+      async ({ query }) => {
+        try {
+          const searchResult = await searchWebViaBackend(query, 5);
+          if (searchResult.success && Array.isArray(searchResult.results) && searchResult.results.length > 0) {
+            const intel = processSearchResults(query, searchResult.results, companyName);
+            searchIntel.push({ query, signals: intel.signals || [] });
+          }
+        } catch (err) {
+          errors.push(`Search "${query}" failed: ${String(err)}`);
         }
-      } catch (err) {
-        errors.push(`Search "${query}" failed: ${String(err)}`);
-      }
-    }
+      },
+      { batchSize: 3, label: 'web-search-queries' }
+    );
   }
 
   // ── Step 3: LinkedIn (SAFE — research links only) ───────
@@ -830,7 +846,6 @@ export async function runFullAggressiveRecon(
       errors.push(`News intel failed: ${String(err)}`);
     }
   }
-
   // ── Step 5: Social profile discovery ────────────────────
   if (!options?.skipSocial) {
     try {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { PageHeader } from '../components/PageHeader';
@@ -11,8 +11,13 @@ import type { Company, CompanyProfile } from '../types';
 export default function CompanyProfilePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getCompany, updateCompany, regenerateAnalysis } = useApp();
+  const { getCompany, updateCompany, regenerateAnalysis, setCurrentCompany } = useApp();
   const company = getCompany(id || '');
+
+  // Ensure the sidebar enables company tabs when viewing via URL
+  useEffect(() => {
+    if (id) setCurrentCompany(id);
+  }, [id, setCurrentCompany]);
 
   if (!company) {
     return (

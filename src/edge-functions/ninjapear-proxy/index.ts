@@ -498,19 +498,20 @@ async function handleFullRecon(body: RequestBody): Promise<ActionResponse> {
 
 Deno.serve(async (req: Request) => {
   const start = Date.now();
+
+  // Handle CORS preflight FIRST — browsers send OPTIONS without Authorization header
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' },
+    });
+  }
+
   const { authorized, role } = validateAuth(req);
 
   if (!authorized) {
     return new Response(JSON.stringify({ success: false, error: 'Unauthorized — valid JWT required in Authorization header' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-    });
-  }
-
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' },
     });
   }
 

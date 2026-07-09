@@ -15,6 +15,8 @@ import {
   Wrench,
   Zap,
   FileText,
+  FileSearch,
+  ClipboardList,
   Settings,
   LogOut,
 } from 'lucide-react';
@@ -41,6 +43,8 @@ const companyNavItems: NavItem[] = [
   { path: '/tools', label: 'Tool & Workflow', icon: <Wrench size={18} /> },
   { path: '/opportunities', label: 'Opportunity Engine', icon: <Zap size={18} /> },
   { path: '/plan', label: 'Profit Builder', icon: <FileText size={18} /> },
+  { path: '/partner-intel', label: 'Partner Intel Brief', icon: <FileSearch size={18} /> },
+  { path: '/executive-summary', label: 'Executive Summary', icon: <ClipboardList size={18} /> },
   { path: '/export', label: 'Company Export', icon: <Download size={18} /> },
 ];
 

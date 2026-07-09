@@ -6,7 +6,7 @@
 // proxy-based recon.
 
 import type { PeopleSourceQueueItem, PeopleSignalSourceType, PeopleSignals, ReconFindings, Company, DiscoveredEmployee, LinkedInPostSignal, ConfidenceLevel } from '../types';
-import { analyzePeopleText, isLikelyPersonName, hasRoleKeywordNearby } from './peopleSignalEngine';
+import { analyzePeopleText, isLikelyPersonName, isLikelyPersonNameLenient, hasRoleKeywordNearby } from './peopleSignalEngine';
 import { extractNamedPeople, extractCompanyFields } from './peopleNameExtractor';
 let idCounter = 0;
 function uid(prefix = 'pq'): string {
@@ -388,7 +388,7 @@ export function extractEmployeesFromLinkedInText(
   while ((match = nameRolePattern.exec(text)) !== null) {
     const name = match[1].trim();
     const role = match[2].trim();
-    if (!isLikelyPersonName(name)) continue;
+    if (!isLikelyPersonName(name) && !isLikelyPersonNameLenient(name)) continue;
     if (!hasRoleKeywordNearby(role)) continue;
     if (seen.has(name.toLowerCase()) || name.length <= 3) continue;
     seen.add(name.toLowerCase());
@@ -406,7 +406,7 @@ export function extractEmployeesFromLinkedInText(
   while ((match = bulletPattern.exec(text)) !== null) {
     const name = match[1].trim();
     if (seen.has(name.toLowerCase())) continue;
-    if (!isLikelyPersonName(name) || name.length <= 3) continue;
+    if ((!isLikelyPersonName(name) && !isLikelyPersonNameLenient(name)) || name.length <= 3) continue;
     const lineIdx = lines.findIndex(l => l.includes(name));
     if (lineIdx >= 0 && hasRoleKeywordNearby(lines[lineIdx])) {
       seen.add(name.toLowerCase());
@@ -442,7 +442,7 @@ export function extractEmployeesFromLinkedInText(
   while ((match = looseNamePattern.exec(text)) !== null) {
     const candidate = match[1].trim();
     if (seen.has(candidate.toLowerCase())) continue;
-    if (!isLikelyPersonName(candidate) || candidate.length <= 3) continue;
+    if ((!isLikelyPersonName(candidate) && !isLikelyPersonNameLenient(candidate)) || candidate.length <= 3) continue;
     // Check 100-char window around the name for role keywords
     const idx = match.index;
     const window = text.slice(Math.max(0, idx - 50), Math.min(text.length, idx + candidate.length + 100));
@@ -482,7 +482,7 @@ export function extractStakeholderMentions(text: string): StakeholderMention[] {
   while ((match = pattern1.exec(text)) !== null) {
     const name = match[1].trim();
     const role = match[2].trim();
-    if (!isLikelyPersonName(name)) continue;
+    if (!isLikelyPersonName(name) && !isLikelyPersonNameLenient(name)) continue;
     if (!seen.has(name)) {
       seen.add(name);
       const snippet = text.slice(Math.max(0, match.index - 30), Math.min(text.length, match.index + match[0].length + 80));
@@ -503,7 +503,7 @@ export function extractStakeholderMentions(text: string): StakeholderMention[] {
     if (!m) continue;
     const name = m[1].trim();
     const role = m[2].trim();
-    if (!isLikelyPersonName(name)) continue;
+    if (!isLikelyPersonName(name) && !isLikelyPersonNameLenient(name)) continue;
     if (!hasRoleKeywordNearby(role)) continue;
     if (!seen.has(name)) {
       seen.add(name);

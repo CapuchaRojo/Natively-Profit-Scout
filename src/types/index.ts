@@ -1047,6 +1047,49 @@ export interface EventDiscoveryCandidate {
 }
 
 // ============================================================
+// Partner Intel Brief Types (v2.1)
+// ============================================================
+
+export type IntelSource = 'public' | 'internal_context' | 'inferred' | 'assumed';
+
+export interface PartnerIntelSection {
+  title: string;
+  body: string;
+  source: IntelSource;
+  confidence: ConfidenceLevel;
+  evidenceUrls: string[];
+  internalNotes?: string;
+}
+
+export interface PartnerIntelBrief {
+  companyId: string;
+  companyName: string;
+  generatedAt: string;
+  // Sections
+  companySummary: PartnerIntelSection;
+  leadershipMap: PartnerIntelSection;
+  relatedEntities: PartnerIntelSection;
+  publicPositioning: PartnerIntelSection;
+  toolStackCompetitors: PartnerIntelSection;
+  workflowsAndPainPoints: PartnerIntelSection;
+  builderFit: PartnerIntelSection;
+  computeRelayFit: PartnerIntelSection;
+  channelPartnerFit: PartnerIntelSection;
+  risksAndUnknowns: PartnerIntelSection;
+  ctoBuyerObjections: PartnerIntelSection;
+  recommendedDemoAngle: PartnerIntelSection;
+  validationPlan: PartnerIntelSection;
+  accessCreditsRecommendation: PartnerIntelSection;
+  partnerOpportunityScore: PartnerIntelSection & { score: number; maxScore: number };
+  recommendedNextAction: PartnerIntelSection;
+  internalContextNotes: PartnerIntelSection;
+  // Metadata
+  dataFreshness: 'fresh' | 'stale' | 'unknown';
+  sourcesUsed: string[];
+  internalContextPasted: boolean;
+}
+
+// ============================================================
 // AI Factory Channel Sales Types (v2.0)
 // ============================================================
 

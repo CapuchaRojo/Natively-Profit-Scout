@@ -8,11 +8,57 @@ import { CopyButton } from '../components/CopyButton';
 import { EmptyState, EmptyStateIcon, EmptyStateTitle, EmptyStateDesc } from '../components/EmptyState';
 import type { Company, CompanyProfile } from '../types';
 
+// ── Helpers ──────────────────────────────────────────────────
+
+/** Strip accidental "Company:" prefix from stored names */
+function cleanCompanyName(name: string): string {
+  return name.replace(/^Company:\s*/i, '').trim();
+}
+
+/** Derive the best available employee count from all data sources */
+function deriveEmployeeCount(company: Company): { count: number; source: string } {
+  // 1. LinkedIn company size range from aggressive recon
+  const range = company.aggressiveRecon?.linkedInCompany?.employeeRange;
+  if (range) {
+    const rangeMatch = range.match(/(\d+)[^0-9]*[–\-–]\s*(\d+)/);
+    if (rangeMatch) {
+      const lo = parseInt(rangeMatch[1]);
+      const hi = parseInt(rangeMatch[2]);
+      return { count: Math.round((lo + hi) / 2), source: 'LinkedIn (range avg)' };
+    }
+    const singleMatch = range.match(/(\d+)/);
+    if (singleMatch) return { count: parseInt(singleMatch[1]), source: 'LinkedIn' };
+  }
+
+  // 2. Number of extracted people from recon
+  const peopleCount = company.aggressiveRecon?.extractedPeople?.length;
+  if (peopleCount && peopleCount > 0) {
+    return { count: peopleCount, source: 'Recon (people found)' };
+  }
+
+  // 3. Imported contacts
+  if (company.contacts?.length) {
+    return { count: company.contacts.length, source: 'Contacts (import)' };
+  }
+
+  // 4. Stakeholders
+  if (company.stakeholders?.length) {
+    return { count: company.stakeholders.length, source: 'Stakeholders' };
+  }
+
+  // 5. Fallback to the stored value
+  return { count: company.basic.employeeCount, source: 'Manual entry' };
+}
+
 export default function CompanyProfilePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getCompany, updateCompany, regenerateAnalysis, setCurrentCompany } = useApp();
   const company = getCompany(id || '');
+  const [editingName, setEditingName] = useState(false);
+  const [editingEmployees, setEditingEmployees] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [employeeDraft, setEmployeeDraft] = useState('');
 
   // Ensure the sidebar enables company tabs when viewing via URL
   useEffect(() => {
@@ -35,15 +81,94 @@ export default function CompanyProfilePage() {
     );
   }
 
+  const displayName = cleanCompanyName(company.basic.name);
+  const { count: dynamicEmployees, source: employeeSource } = deriveEmployeeCount(company);
+
   const handleRegenerate = () => {
     regenerateAnalysis(company.id);
+  };
+
+  const handleSaveName = () => {
+    const trimmed = cleanCompanyName(nameDraft);
+    if (trimmed) {
+      updateCompany(company.id, { basic: { ...company.basic, name: trimmed } });
+    }
+    setEditingName(false);
+  };
+
+  const handleSaveEmployees = () => {
+    const num = parseInt(employeeDraft);
+    if (!isNaN(num) && num >= 0) {
+      updateCompany(company.id, { basic: { ...company.basic, employeeCount: num } });
+    }
+    setEditingEmployees(false);
   };
 
   return (
     <div>
       <PageHeader
-        title={company.basic.name}
-        subtitle={`${company.basic.industry} · ${company.basic.location} · ${company.basic.employeeCount} employees`}
+        title={
+          editingName ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                className="input"
+                value={nameDraft}
+                onChange={e => setNameDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSaveName(); if (e.key === 'Escape') setEditingName(false); }}
+                autoFocus
+                style={{ fontSize: 18, fontWeight: 700, padding: '4px 8px', width: 320 }}
+              />
+              <button className="btn btn-primary btn-sm" onClick={handleSaveName}>Save</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setEditingName(false)}>Cancel</button>
+            </div>
+          ) : (
+            <span
+              onClick={() => { setNameDraft(displayName); setEditingName(true); }}
+              style={{ cursor: 'pointer', borderBottom: '2px dashed transparent', transition: 'border-color 0.15s' }}
+              onMouseEnter={e => (e.currentTarget.style.borderBottomColor = '#3b82f6')}
+              onMouseLeave={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
+              title="Click to edit company name"
+            >
+              {displayName}
+            </span>
+          )
+        }
+        subtitle={
+          <span>
+            {company.basic.industry} · {company.basic.location} ·{' '}
+            {editingEmployees ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  value={employeeDraft}
+                  onChange={e => setEmployeeDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSaveEmployees(); if (e.key === 'Escape') setEditingEmployees(false); }}
+                  autoFocus
+                  style={{ width: 60, padding: '2px 6px', fontSize: 12, display: 'inline-block' }}
+                />
+                <button className="btn btn-primary btn-sm" onClick={handleSaveEmployees} style={{ fontSize: 10, padding: '2px 6px' }}>✓</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setEditingEmployees(false)} style={{ fontSize: 10, padding: '2px 6px' }}>✕</button>
+              </span>
+            ) : (
+              <span
+                onClick={() => { setEmployeeDraft(String(dynamicEmployees)); setEditingEmployees(true); }}
+                style={{ cursor: 'pointer', borderBottom: '2px dashed transparent', transition: 'border-color 0.15s' }}
+                onMouseEnter={e => (e.currentTarget.style.borderBottomColor = '#3b82f6')}
+                onMouseLeave={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
+                title={`Source: ${employeeSource}. Click to edit.`}
+              >
+                {dynamicEmployees > 0 ? `${dynamicEmployees} employees` : 'Unknown employees'}
+                {dynamicEmployees > 0 && employeeSource !== 'Manual entry' && (
+                  <span style={{ fontSize: 9, color: '#10b981', marginLeft: 4, verticalAlign: 'middle' }}>
+                    ({employeeSource})
+                  </span>
+                )}
+              </span>
+            )}
+          </span>
+        }
         actions={
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-secondary" onClick={handleRegenerate}>
@@ -61,6 +186,7 @@ export default function CompanyProfilePage() {
         <div className="card">
           <div className="card-header"><span className="input-label" style={{ margin: 0 }}>Company</span></div>
           <div className="card-body" style={{ fontSize: 13 }}>
+            <div><span className="text-muted">Name:</span> {displayName}</div>
             <div><span className="text-muted">Website:</span> {company.basic.website}</div>
             <div><span className="text-muted">Revenue:</span> {company.basic.revenueEstimate || 'Unknown'}</div>
             <div><span className="text-muted">Model:</span> {company.business.salesModel || 'Unknown'}</div>
@@ -69,8 +195,14 @@ export default function CompanyProfilePage() {
         <div className="card">
           <div className="card-header"><span className="input-label" style={{ margin: 0 }}>Intelligence</span></div>
           <div className="card-body" style={{ fontSize: 13 }}>
+            <div><span className="text-muted">Employees:</span> {dynamicEmployees > 0 ? dynamicEmployees : '—'}
+              {dynamicEmployees > 0 && employeeSource !== 'Manual entry' && (
+                <span style={{ fontSize: 10, color: '#10b981', marginLeft: 4 }}>({employeeSource})</span>
+              )}
+            </div>
             <div><span className="text-muted">Pain Points:</span> {company.painPoints.length} identified</div>
             <div><span className="text-muted">Stakeholders:</span> {company.stakeholders.length} identified</div>
+            <div><span className="text-muted">Tools Mapped:</span> {company.toolMap.length} identified</div>
             <div><span className="text-muted">Opportunities:</span> {company.opportunities.length} identified</div>
           </div>
         </div>
@@ -123,6 +255,8 @@ export default function CompanyProfilePage() {
           { path: `/company/${company.id}/tools`, label: '🔧 Tools & Workflow', color: 'blue' },
           { path: `/company/${company.id}/opportunities`, label: '⚡ Opportunities', color: 'amber' },
           { path: `/company/${company.id}/plan`, label: '📋 Profit Plan', color: 'green' },
+          { path: `/company/${company.id}/partner-intel`, label: '📊 Partner Intel Brief', color: 'cyan' },
+          { path: `/company/${company.id}/executive-summary`, label: '📝 Executive Summary', color: 'blue' },
           { path: `/company/${company.id}/export`, label: '📤 CRM Export', color: 'blue' },
         ].map(link => (
           <button

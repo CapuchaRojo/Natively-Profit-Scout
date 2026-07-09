@@ -67,12 +67,18 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   const [detectedTools, setDetectedTools] = useState<DetectedTool[]>([]);
   const [inferredWorkflows, setInferredWorkflows] = useState<InferredWorkflow[]>([]);
   const [suggestions, setSuggestions] = useState<ReconAutoFillSuggestion[]>([]);
+  const [appliedFields, setAppliedFields] = useState<Set<string>>(new Set());
   const [openings, setOpenings] = useState<ReconOpening[]>([]);
   const [extraUrls, setExtraUrls] = useState('');
   const [scanStatus, setScanStatus] = useState<'idle' | 'discovering' | 'fetching' | 'analyzing' | 'done' | 'error'>('idle');
   const [scanError, setScanError] = useState('');
   const [fetchProgress, setFetchProgress] = useState('');
   const [manualPasteText, setManualPasteText] = useState('');
+  const [manualPeopleText, setManualPeopleText] = useState('');
+  const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
+  const [peopleSourceType, setPeopleSourceType] = useState<PeopleSignalSourceType>('linkedin_company_about');
+  const [publicPeopleNotes, setPublicPeopleNotes] = useState(company?.reconFindings?.publicPeopleNotes || '');
+  const [publicLeadershipText, setPublicLeadershipText] = useState(company?.reconFindings?.publicLeadershipText || '');
   const [analyzingUrlId, setAnalyzingUrlId] = useState<string | null>(null);
 
   // ── Autosave: persist text inputs across navigation ────────
@@ -91,7 +97,6 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
       if (reconDraft.peopleSourceUrl) setPeopleSourceUrl(reconDraft.peopleSourceUrl);
     }
   }, [reconDraft]);
-  const [peopleSourceUrl, setPeopleSourceUrl] = useState('');
   const [peopleRoleMap, setPeopleRoleMap] = useState<RoleMapEntry[]>([]);
   const [peopleStakeholderHyps, setPeopleStakeholderHyps] = useState<StakeholderHypothesis[]>([]);
   const [peopleHiringSignals, setPeopleHiringSignals] = useState<HiringSignal[]>([]);
@@ -604,6 +609,8 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
   // ─── Step 3: Apply Findings ─────────────────────────────────
 
   const handleApplySuggestion = (field: string, value: string) => {
+    const key = `${field}::${value}`;
+    setAppliedFields(prev => new Set(prev).add(key));
     const updates: Partial<Company> = {};
     switch (field.replace('Tool:', '').trim()) {
       case 'Industry':
@@ -635,6 +642,9 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
     }
     if (Object.keys(updates).length > 0) {
       updateCompany(company.id, updates);
+      showToast(`✅ Applied "${value}" to ${field}`, 'success');
+    } else {
+      showToast(`⚠️ Could not map field "${field}" — no matching company field`, 'error');
     }
   };
 
@@ -1895,10 +1905,11 @@ const [activeTab, setActiveTab] = useState<Tab>('discover');
                     <div className="flex items-center justify-between">
                       <span style={{ color: '#64748b', fontSize: 11 }}>Evidence: {s.evidence}</span>
                       <button
-                        className="btn btn-primary btn-sm"
+                        className={`btn btn-sm ${appliedFields.has(`${s.field}::${s.suggestedValue}`) ? 'btn-success' : 'btn-primary'}`}
+                        disabled={appliedFields.has(`${s.field}::${s.suggestedValue}`)}
                         onClick={() => handleApplySuggestion(s.field, s.suggestedValue)}
                       >
-                        Apply
+                        {appliedFields.has(`${s.field}::${s.suggestedValue}`) ? 'Applied ✓' : 'Apply'}
                       </button>
                     </div>
                   </div>

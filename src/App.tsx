@@ -20,6 +20,8 @@ import PublicIntelPage from './pages/PublicIntel';
 import AutoFillReconPage from './pages/AutoFillRecon';
 import PipelineScoutPage from './pages/PipelineScout';
 import AIFactoryChannelSalesPage from './pages/AIFactoryChannelSales';
+import PartnerIntelBriefPage from './pages/PartnerIntelBrief';
+import ExecutiveSummaryPage from './pages/ExecutiveSummary';
 import SettingsPage from './pages/Settings';
 
 export default function App() {
@@ -57,6 +59,8 @@ export default function App() {
                             <Route path="/crm-export" element={<CRMExportPage />} />
                             <Route path="/company/:id/export" element={<CRMExportPage />} />
                             <Route path="/company/:id/auto-fill-recon" element={<AutoFillReconPage />} />
+                            <Route path="/company/:id/partner-intel" element={<PartnerIntelBriefPage />} />
+                            <Route path="/company/:id/executive-summary" element={<ExecutiveSummaryPage />} />
                             <Route path="/settings" element={<SettingsPage />} />
                             <Route path="*" element={<Navigate to="/" replace />} />
                           </Routes>

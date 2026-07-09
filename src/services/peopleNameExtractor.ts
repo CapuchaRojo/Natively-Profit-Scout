@@ -7,9 +7,15 @@
 //   "Pawel Czech — Thinking about thinking. Building the AI-Native Economy"
 // ============================================================
 
-import { COMMON_FIRST_NAMES, ROLE_TITLE_KEYWORDS } from './peopleSignalEngine';
+import { COMMON_FIRST_NAMES, ROLE_TITLE_KEYWORDS, isLikelyPersonNameLenient } from './peopleSignalEngine';
 import type { ConfidenceLevel } from '../types';
 import type { NamedPerson } from '../types';
+
+// ─── Expanded Unicode character ranges for European names ─────
+// Covers Latin-1 Supplement + Latin Extended-A (Polish, Czech,
+// Croatian, Romanian, Turkish, Baltic, etc.)
+const UC = 'A-Z\\u00C0-\\u00D6\\u00D8-\\u00DD\\u0100-\\u017F';
+const LC = 'a-z\\u00E0-\\u00F6\\u00F8-\\u00FF\\u0100-\\u017F';
 
 // ─── Name-Role Extraction Patterns ────────────────────────────
 
@@ -93,7 +99,7 @@ export function extractNamedPeople(text: string): NameWithRole[] {
 
     // Match: "Prefix Name LastName[, suffix] [|–—,-] [role/description]"
     const nameRoleMatch = trimmed.match(
-      /^([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){1,2}(?:,?\s*(?:Ph\.?D|M\.?D|M\.?B\.?A|M\.?S\.?c|CPA|1st|2nd|3rd))?(?:\s*,?\s*(?:Ph\.?D|M\.?D|M\.?B\.?A))?)\s*[–—|\-,:]\s*(.+)$/
+      /^([A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F]+(?:\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F'-]+){1,2}(?:,?\s*(?:Ph\.?D|M\.?D|M\.?B\.?A|M\.?S\.?c|CPA|1st|2nd|3rd))?(?:\s*,?\s*(?:Ph\.?D|M\.?D|M\.?B\.?A))?)\s*[–—|\-,:]\s*(.+)$/
     );
     if (nameRoleMatch) {
       const rawName = nameRoleMatch[1].trim();
@@ -118,7 +124,7 @@ export function extractNamedPeople(text: string): NameWithRole[] {
     }
 
     // ── Pattern 2: "Name • Role" or "Name · Role" ──
-    const bulletMatch = trimmed.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){1,2})\s*[•·]\s*(.+)$/);
+    const bulletMatch = trimmed.match(/^([A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F]+(?:\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F'-]+){1,2})\s*[•·]\s*(.+)$/);
     if (bulletMatch) {
       const name = cleanName(bulletMatch[1].trim());
       if (!isLikelyPersonNameExtended(name)) continue;
@@ -145,7 +151,7 @@ export function extractNamedPeople(text: string): NameWithRole[] {
   // Like LinkedIn profile headers: "Andrea Marazzi, PhD1st · 1stSerial Founder..."
   // We already handle the primary name-role in Pattern 1 above.
   // For secondary indicators (the "1st · 1st" pattern), try:
-  const linkedInHeaderPattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){1,2})\s*(?:1st|2nd|3rd)?\s*·/g;
+  const linkedInHeaderPattern = /([A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F]+(?:\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F'-]+){1,2})\s*(?:1st|2nd|3rd)?\s*·/g;
   let m;
   while ((m = linkedInHeaderPattern.exec(text)) !== null) {
     const name = cleanName(m[1].trim());
@@ -171,7 +177,7 @@ export function extractNamedPeople(text: string): NameWithRole[] {
     const trimmed = line.trim();
     if (!trimmed || trimmed.length < 8) continue;
 
-    const nameMatch = trimmed.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z'-]+){1,2})(?:\s|$)/);
+    const nameMatch = trimmed.match(/^([A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F]+(?:\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F][a-z\u00E0-\u00F6\u00F8-\u00FF\u0100-\u017F'-]+){1,2})(?:\s|$)/);
     if (!nameMatch) continue;
 
     const name = cleanName(nameMatch[1].trim());
@@ -204,14 +210,14 @@ function cleanName(rawName: string): string {
 function isLikelyPersonNameExtended(text: string): boolean {
   const trimmed = text.trim();
   const words = trimmed.split(/\s+/);
-  if (words.length < 2 || words.length > 3) return false;
+  if (words.length < 2 || words.length > 4) return false;
 
-  // First word must be a known first name
-  if (!EXTENDED_FIRST_NAMES.has(words[0].toLowerCase())) return false;
+  // First word must be a known first name OR pass lenient check
+  const firstNameKnown = EXTENDED_FIRST_NAMES.has(words[0].toLowerCase());
 
   // No digits, reasonable length
   if (/\d/.test(trimmed)) return false;
-  if (trimmed.length > 40) return false;
+  if (trimmed.length > 50) return false;
 
   // Not all uppercase
   if (trimmed === trimmed.toUpperCase() && trimmed.length > 3) return false;
@@ -221,7 +227,12 @@ function isLikelyPersonNameExtended(text: string): boolean {
   if (lastName.length < 2) return false;
   if (lastName === lastName.toUpperCase() && lastName.length > 3) return false;
 
-  return true;
+  // If first name is in the dictionary, accept it
+  if (firstNameKnown) return true;
+
+  // Fall back to the lenient structural check for European names
+  // not in the dictionary (e.g. Polish, Czech, Scandinavian, etc.)
+  return isLikelyPersonNameLenient(trimmed);
 }
 
 function hasRoleKeywordNearbyExtended(text: string): boolean {

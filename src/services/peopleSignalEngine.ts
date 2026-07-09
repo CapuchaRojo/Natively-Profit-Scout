@@ -115,6 +115,21 @@ export const COMMON_FIRST_NAMES = new Set([
   'bridget','siobhan','ciaran','aoife','niamh',
   'josef','tomas','karel','pavel',
   'nikola','dusan','marko','ivan','dragan',
+  // Italian / Mediterranean (v0.7 — added for Hybrid.one fix)
+  'paolo','davide','edoardo','mustafa','cristina','nicolo','nicolò',
+  'giuseppe','roberto','fabio','giorgio','riccardo','simone','alberto',
+  'enzo','franco','luigi','salvatore','domenico','vincenzo','pasquale',
+  'claudio','massimo','danilo','emanuele','filippo','gabriele','gianluca',
+  'mauro','raffaele','sergio','valentina','francesca','chiara','elisa',
+  'alessia','giulia','martina','silvia','ilaria','elisabetta','antonella',
+  'letizia','giovanna','lucia','paola','rosanna','simona','flavia',
+  // Additional European
+  'lars-erik','per','gustav','fredrik','johan','olof',
+  'filipe','joao','rui','tiago','nuno','goncalo',
+  'dimitris','nikos','kostas','yannis','georgios',
+  'michal','jakub','wojciech','tomasz','mateusz',
+  'bogdan','catalin','andrei','marius','florin',
+  'zoltan','istvan','gabor','laszlo','tamas',
 ]);
 
 // ─── Product/Technology Blocklist ─────────────────────────────
@@ -160,10 +175,122 @@ export function isLikelyPersonName(text: string): boolean {
   return true;
 }
 
+/**
+ * Lenient person name check — does NOT require first-name dictionary lookup.
+ * Accepts any capitalized "Word Word" pattern that looks like a real name.
+ * Use this in fallback extraction paths where role keywords nearby provide
+ * additional signal that the match is a person, not a product/company name.
+ */
+/**
+ * European name particles — legitimate surname components that should NOT be
+ * treated as non-name words. Common across Italian, French, German, Dutch,
+ * Spanish, Portuguese, Scandinavian, and Slavic naming conventions.
+ * e.g. "Marco Della Torre", "Jan van den Berg", "Jean de la Fontaine"
+ */
+const EUROPEAN_NAME_PARTICLES = new Set([
+  // Italian
+  'della', 'degli', 'dei', 'del', 'di', 'da', 'dal', 'dallo',
+  'dall', 'degli', 'delle', 'de', 'lo', 'la', 'li', 'le',
+  // French
+  'de', 'du', 'des', 'le', 'la', 'les', 'l\'',
+  // German
+  'von', 'zu', 'zum', 'zur', 'am', 'vom', 'beim', 'im',
+  // Dutch / Flemish
+  'van', 'den', 'der', 'ten', 'ter', 'te', 'op', 'uit', 'in',
+  'vande', 'vanden', 'vander', 'ver',
+  // Spanish / Catalan
+  'de', 'del', 'la', 'las', 'los', 'y', 'e', 'i',
+  // Portuguese
+  'de', 'da', 'das', 'do', 'dos', 'e',
+  // Scandinavian
+  'af', 'av', 'von', 'zu',
+  // Slavic / Eastern European
+  'z', 'ze', 'od', 'iz',
+  // Celtic
+  'mac', 'mc', 'o\'', 'ni', 'nic',
+  // Arabic / North African (often appear in European contexts)
+  'al', 'el', 'bin', 'bint', 'abu', 'ben', 'ibn',
+  // Turkish
+  'oglu', 'kizi',
+]);
+
+export function isLikelyPersonNameLenient(text: string): boolean {
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;
+  // Each word must start with uppercase (Latin + Latin Extended-A)
+  if (!words.every(w => /^[A-Z\u00C0-\u00D6\u00D8-\u00DD\u0100-\u017F]/.test(w))) return false;
+  // Each word must be at least 1 char (allows single-letter particles like "D" or "L")
+  if (words.some(w => w.length < 1)) return false;
+  // No digits
+  if (/\d/.test(trimmed)) return false;
+  // Not all uppercase
+  if (trimmed === trimmed.toUpperCase() && trimmed.length > 3) return false;
+  // Not too long
+  if (trimmed.length > 50) return false;
+  // Not in product blocklist
+  if (PRODUCT_BLOCKLIST.has(trimmed.toLowerCase())) return false;
+  // Not common non-name words (but allow European name particles)
+  const nonNameWords = new Set([
+    'the', 'and', 'for', 'our', 'all', 'new', 'big', 'top', 'key',
+    'high', 'low', 'mid', 'pro', 'pre', 'post', 'non', 'via', 'per',
+    'about', 'contact', 'privacy', 'terms', 'policy', 'rights',
+    'reserved', 'copyright', 'cookie', 'cookies', 'subscribe',
+    'follow', 'share', 'search', 'sign', 'login', 'register',
+    'company', 'companies', 'business', 'service', 'services',
+    'product', 'products', 'solution', 'solutions', 'platform',
+    'technology', 'digital', 'global', 'international', 'corporate',
+    'group', 'team', 'partner', 'partners', 'client', 'clients',
+    'management', 'consulting', 'agency', 'studio', 'lab', 'labs',
+    'italia', 'italy', 'milano', 'milan', 'roma', 'rome',
+    'startup', 'innovation', 'innovative', 'creative', 'design',
+    'marketing', 'media', 'content', 'social', 'brand', 'web',
+    'mobile', 'cloud', 'data', 'software', 'hardware', 'network',
+    'security', 'support', 'help', 'info', 'information',
+    'online', 'offline', 'retail', 'store', 'shop', 'market',
+    'development', 'research', 'analysis', 'strategy', 'planning',
+    'project', 'program', 'system', 'systems', 'process', 'quality',
+    'performance', 'growth', 'revenue', 'sales', 'operations',
+    'finance', 'accounting', 'human', 'resources', 'talent',
+    'communication', 'communications', 'public', 'relations',
+    'experience', 'customer', 'consumer', 'user', 'enterprise',
+    'event', 'events', 'news', 'press', 'blog', 'article',
+    'training', 'education', 'learning', 'academy', 'school',
+    'center', 'centre', 'institute', 'foundation', 'association',
+    'organization', 'organisation', 'federation', 'union',
+    'north', 'south', 'east', 'west', 'central', 'northern',
+    'southern', 'eastern', 'western', 'united', 'first', 'second',
+    'third', 'next', 'last', 'best', 'better', 'plus', 'one',
+    'today', 'tomorrow', 'yesterday', 'future', 'past', 'present',
+    'over', 'under', 'between', 'behind', 'beyond', 'within',
+    'without', 'through', 'during', 'before', 'after', 'since',
+    'management', 'leadership', 'executive', 'advisory', 'board',
+    'venture', 'capital', 'private', 'equity', 'holding', 'holdings',
+    'real', 'estate', 'property', 'properties', 'investment',
+    'investments', 'asset', 'assets', 'fund', 'funds', 'trust',
+  ]);
+  // Check if the first meaningful word is a non-name word
+  // (skip short European name particles like "de", "van", "della" at position 0 or 1)
+  const firstWord = words[0].toLowerCase();
+  const secondWord = words.length > 1 ? words[1].toLowerCase() : '';
+  // If the first word is a known name particle, it's fine — check the second word
+  if (EUROPEAN_NAME_PARTICLES.has(firstWord)) {
+    // First word is a particle — check second word isn't a non-name word
+    if (nonNameWords.has(secondWord)) return false;
+  } else if (EUROPEAN_NAME_PARTICLES.has(secondWord)) {
+    // Second word is a particle (e.g. "Marco della") — check first word isn't a non-name word
+    if (nonNameWords.has(firstWord)) return false;
+  } else {
+    // Neither is a particle — both must not be non-name words
+    if (nonNameWords.has(firstWord) || nonNameWords.has(secondWord)) return false;
+  }
+  return true;
+}
+
 // ─── Role Title Keywords ───────────────────────────────────────
 
 export const ROLE_TITLE_KEYWORDS = [
-  'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cio', 'ciso', 'chro', 'cpo',
+  'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cio', 'ciso', 'chro', 'cpo', 'cso',
   'vp ', 'vice president', 'director', 'head of', 'manager', 'lead ',
   'chief', 'president', 'founder', 'co-founder', 'partner',
   'senior ', 'principal ', 'staff ', 'architect', 'engineer',
@@ -172,6 +299,21 @@ export const ROLE_TITLE_KEYWORDS = [
   'administrator', 'supervisor', 'officer', 'sales ', 'marketing',
   'support', 'operations', 'finance', 'product manager',
   'customer success', 'account executive', 'business development',
+  // Italian / EU role titles (v0.7)
+  'amministratore delegato', 'amministratore', 'direttore', 'socio',
+  'responsabile', 'capo', 'progettista', 'sviluppatore',
+  'consulente', 'specialista', 'analista', 'coordinatore',
+  'media buyer', 'buyer', 'designer', 'ui/ux', 'ui designer', 'ux designer',
+  'creativo', 'creativa', 'grafico', 'grafica',
+  'commercialista', 'contabile', 'ragioniere',
+  'ingegnere', 'tecnico', 'perito', 'programmatore',
+  'digital strategist', 'seo specialist', 'content manager',
+  'social media manager', 'performance marketer',
+  // French / Spanish role titles
+  'directeur', 'directrice', 'responsable', 'chef', 'gerant',
+  'ingenieur', 'consultant', 'developpeur',
+  'director general', 'director de', 'jefe', 'gerente',
+  'encargado', 'desarrollador', 'ingeniero',
 ];
 
 export function hasRoleKeywordNearby(text: string): boolean {
